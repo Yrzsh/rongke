@@ -1,0 +1,41 @@
+# 源码发行件（sdist）清单。
+# wheel 的资产清单在 pyproject.toml 的 [tool.setuptools.package-data]，两者互补：
+# 这里只负责「从源码重新构建/二次开发」需要、但不属于 Python 包的文件。
+# 用户数据、本机配置、运行产物一律不进发行件。
+
+include README.md
+include NOTICE.md
+include LICENSE
+include LICENSE-DESKTOP.txt
+include CHANGELOG.md
+include config.example.json
+
+recursive-include rongke/presets *.json *.md
+recursive-include rongke/caps_ext *.py
+recursive-include rongke/skills *.md
+recursive-include rongke/web/static *.css *.js
+
+include packaging/entry.py
+include packaging/rongke.spec
+include packaging/rongke.iss
+include packaging/build_release.py
+include packaging/smoke_test.py
+include packaging/INSTALL-NOTES.txt
+include packaging/RELEASE_NOTES.md
+include tools/issue_code.py
+
+prune build
+prune dist
+prune runs
+prune topics
+prune memory
+prune materials
+prune evidence
+prune vendor
+prune figures
+prune .backups
+prune .workbuddy
+prune .git
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__/*

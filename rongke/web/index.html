@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>荣珂</title>
+<script>
+/* 主题必须在首屏绘制**之前**定下来，否则暗色用户会先看到一帧白闪。
+   所以这段内联在 head 里，而不是等 DOMContentLoaded。 */
+(function () {
+  try {
+    var saved = localStorage.getItem("rongke-theme");
+    var dark = saved ? saved === "dark"
+      : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.dataset.themeSrc = saved ? "manual" : "system";
+  } catch (e) {
+    document.documentElement.dataset.theme = "light";
+  }
+})();
+</script>
+<script>
+/* W14-B · B11：DSH 的输入模态跟踪 —— 最后一次动作是鼠标就把环设透明
+   （立面不清），键盘/按下 Tab 就把环请回来。只在 html 上挂一个 data 属性，
+   不碰任何视图结构。 */
+(function () {
+  var set = function (m) { document.documentElement.dataset.inputModality = m; };
+  window.addEventListener("pointerdown", function () { set("pointer"); }, true);
+  window.addEventListener("keydown", function (e) {
+    if (e.key === "Tab" || e.key === "Enter" || e.key === " " || e.key.indexOf("Arrow") === 0) set("keyboard");
+  }, true);
+})();
+</script>
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/workspace.css">
+<link rel="stylesheet" href="/static/library.css">
+<link rel="stylesheet" href="/static/mentor.css">
+<link rel="stylesheet" href="/static/reader.css">
+<link rel="stylesheet" href="/static/layout.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="side" id="side" aria-label="主导航">
+    <button id="btnSideClose" type="button" aria-label="关闭导航">×</button>
+    <div class="brand"><span class="mark">荣</span><span class="name"><b>荣珂</b><small>科研助手</small></span></div>
+    <button class="newbtn" id="btnNew"><span style="font-size:14px">＋</span><span class="lbl">新任务</span></button>
+    <!-- ══ 导航：平铺，全部看得见（2026-10-26 信息层级重排）══
+         ★ 改了什么：撤掉「工具与档案▸」「更多▸」两个折叠组，9 项平铺。
+         为什么撤：用户说「功能很不清晰」。逐页比对 Paper Workbench 后确认，
+         问题不在配色也不在密度，而在**线索被藏起来了** —— 过程 / 产出 /
+         图与配图三项默认收在「工具与档案」里、「它能做什么 / 科研工具 /
+         质量把关」三项收在「更多」里，不点开就看不见。上一版把它们收进
+         折叠层的理由是"诊断类页面不该和我的东西平铺在同一层"，那个判断
+         在**页序**上是对的，但用**折叠**去实现是错的：折叠把"层级"
+         做成了"隐藏"。
+         ★ 现在改用分组小标题（.navcap）承担层级 —— 层级仍然清楚，
+           每一项仍然一眼可见。这是"分层"与"可见"的折中，也是 Paper
+           Workbench 的做法（它 9 项平铺，靠小标题与页内副标题分群）。
+         ★ 路由一个字节没改：data-v 的值、goView()、VIEWS、斜杠命令、
+           下面那些 loadXxx() 分派全指着同一批 id。撤的是包装，不是页面。
+         ★ 两个折叠按钮（btnToolbox / btnMore）与 bindFold() 的接线
+           一并撤掉 —— 留着按钮却没有子项，点了没反应比没有更糟。
+           若将来要恢复折叠，先读这段再决定。 -->
+    <nav class="nav">
+      <!-- ══ 我的东西 ══ -->
+      <div class="navcap">我的科研</div>
+      <button data-v="kb" class="navbtn" title="文献库 · 手头的 PDF，也能让 AI 找文献入库" aria-label="文献库"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.8" width="9" height="10.4" rx="1"/><path d="M6 2.8v10.4M7.6 5.6h3.2"/></svg></span><span class="lbl">文献库</span></button>
+      <button data-v="mentor" class="navbtn" title="导师与课题 · 管理研究问题、台账和本课题文献" aria-label="导师与课题"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5" r="2.5"/><path d="M3 13c.5-3 2.2-4.5 5-4.5s4.5 1.5 5 4.5"/></svg></span><span class="lbl">导师与课题</span></button>
+      <button data-v="deliv" class="navbtn" title="成果文件 · 历次做出来的东西，点开能看全稿" aria-label="成果文件"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 13 5v6L8 13.5 3 11V5Z"/><path d="M3 5l5 2.5L13 5M8 7.5v6"/></svg></span><span class="lbl">成果文件</span></button>
+      <button data-v="fig" class="navbtn" title="图片与图表 · 配过的图与它们的体检" aria-label="图片与图表"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M5 13.5V8M8 13.5V4M11 13.5V9.5"/></svg></span><span class="lbl">图片与图表</span></button>
+
+      <!-- ══ 它能做什么（诊断层）══
+           这四页读的是内核自己的状态（源码路径、61 个工具表、9 条判定、某次运行的账）。
+           上一版把它们收进「更多▸」折叠层，理由是"对日常做任务是噪音"。
+           那个判断在**页序**上仍然成立 —— 所以排在「我的东西」之后；
+           但用折叠实现是错的，线索被藏起来了。现在同一层，只靠小标题分群。
+
+           ★ 2026-10-28 「过程」从「我的东西」移到这里（用户确认）。
+           分组依据是"这一页的东西能不能拿走"：
+             我的东西 = 你手里的资产（文献库 / 产出 / 图与配图），拿走就归你
+             它能做什么 = 内核自身的状态，拿走没有意义
+           过程页的副标题自己写着「日常不用看」，它看的是某一次运行的轨迹与账目
+           —— 是内核状态，不是资产，原先放错组了。
+           组内顺序也有理由：有什么 → 靠什么干 → 怎么保证 → 这一次具体怎么干的。
+           过程排最后，因为它是前三项在**某一次运行**上的落实。 -->
+      <button class="navcap navadvbtn" id="btnAdvancedNav" type="button" aria-expanded="false" aria-controls="advancedNav">高级与诊断 <span aria-hidden="true">▸</span></button>
+      <div id="advancedNav" hidden>
+      <button data-v="cap" class="navbtn" title="本事清单 · 它有哪些本事、哪些真跑得通" aria-label="本事清单"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx=".8"/><rect x="9" y="2.5" width="4.5" height="4.5" rx=".8"/><rect x="2.5" y="9" width="4.5" height="4.5" rx=".8"/><rect x="9" y="9" width="4.5" height="4.5" rx=".8"/></svg></span><span class="lbl">本事清单</span></button>
+      <button data-v="tools" class="navbtn" title="科研工具 · 检索 / 绘图 / 成稿靠什么干" aria-label="科研工具"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h7.4M13.2 5H14M2 11h3M8.2 11H14"/><circle cx="11" cy="5" r="1.6"/><circle cx="6.4" cy="11" r="1.6"/></svg></span><span class="lbl">科研工具</span></button>
+      <button data-v="gate" class="navbtn" title="质量把关 · 交付前它自己核了哪些" aria-label="质量把关"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 13 4.6v3.6c0 3.4-2.2 5.2-5 6.4-2.8-1.2-5-3-5-6.4V4.6Z"/><path d="M5.8 8 7.4 9.6l3-3.2"/></svg></span><span class="lbl">质量把关</span></button>
+      <button data-v="traj" class="navbtn" title="过程 · 它每一步做了什么、每一项核到什么" aria-label="执行记录"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="4" r="1.7"/><path d="M5.6 11 10.4 5"/></svg></span><span class="lbl">执行记录</span></button>
+      </div>
+    </nav>
+
+    <!-- ══ 历史（唯一列表）：一次运行一行 ══
+         ★ 2026-10-21 撤掉「成品」那套列表，与会话合并成这一份。
+           改前侧栏是**两套**并列的列表（成品 / 会话），大多数行标题几乎一样，
+           而点下去的行为不同：成品行只开右栏稿件台、中间区一动不动（实测
+           `.main` 仍是首页那 256 字、`#thread` 仍是 hidden、标题仍是「新对话」），
+           会话行才回放中间。成品 26 行里 10 行 `result.draft` 为空，点开右栏
+           只有一句空态 ⇒ 用户看到的是"右侧跳出文本、中间无变化"。
+           历史列表只有一份，职责也只有一条：**点哪一行，中间就打开哪一次的对话**。
+           行由 loadSessions()/paintSessions() 现填 —— 这里不放静态行，
+           否则就是第二套「历史是什么」的真相。
+         ★ 2026-10-26：这一块**从 `.nav` 里面搬出来**（从"导航的子项"改成
+           "导航的兄弟"）。改前实测 `#sessList` 高 2048px 被塞进 314px 的
+           `.nav` 滚动区，64 行历史只露 3 行，且滚历史会把导航项一起滚走。
+           搬出来之后 `.nav` 只管导航（不滚），历史自己 `flex:1` 占满剩余、
+           自己滚。搬的是 DOM 位置，`#sessList` / `#sessFlt` 的 id 与 JS 接线没动。 -->
+    <div class="sesshead"><span>历史</span><button class="sessflt" id="sessFlt"
+      type="button" aria-pressed="false" title="子代理归档是荣珂自己派出去的子任务留下的记录，不是你的会话">全部对话</button></div>
+    <div id="sessList"><div class="blank">读取中…</div></div>
+    <!-- goView("chat") 的路由锚点：chat 现在由「新对话 / 会话行」进入，
+         不再占一个可见页签 —— 但回放与视图切换代码仍要点它，所以留着（不可见）。
+         ★ 它在 .nav 外面也照样能被 querySelector('.navbtn[data-v="chat"]') 选中，
+           goView() 与 VIEWS 都只按属性找，不看层级。 -->
+    <button data-v="chat" class="navbtn" hidden aria-hidden="true" tabindex="-1"></button>
+    <div class="sidefoot" id="foot">读取中…</div>
+    <!-- 「默认展开过程」开关撤出侧栏（设置页里有同一份，两份开关就是两个真相）；
+         PROCOPEN 状态与设置页的 #setProc 共用，paintProcSwitch 对缺席元素是空操作。 -->
+    <button class="themebtn" id="btnDesk" title="把交付正文放到右边整面墙上看（也可以从成果卡的「读全稿」进来）">
+      <span><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1"/><path d="M9 3.5v9"/></svg></span><span class="lbl">阅读全文</span></button>
+    <button class="themebtn" id="btnTheme"><span id="themeIcon">◐</span><span class="lbl" id="themeLabel">跟随系统</span></button>
+    <div class="navfoot">
+      <!-- 首次配置：与「设置」并列放在导航底部。它不是"给深看的人"的页
+           （所以不塞进「工具与档案」那个折叠组）—— 第一次用的人必须一眼看见。 -->
+      <button data-v="setup" class="navbtn" title="首次配置 · 做 PPT 和画图要用的工具配好了没有" aria-label="首次配置"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.2h10M3 8h10M3 11.8h6"/><circle cx="12.4" cy="11.8" r="1.9"/><path d="M12.4 10.6v2.4M11.2 11.8h2.4"/></svg></span><span class="lbl">环境检查</span><span class="tag" id="setupBadge" data-tone="neutral" hidden></span></button>
+      <button data-v="lic" class="navbtn" title="授权 · 试用还剩多久、粘贴激活码" aria-label="授权"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="6.4" width="10.8" height="7.2" rx="1.6"/><path d="M5.4 6.4V4.8a2.6 2.6 0 0 1 5.2 0v1.6"/></svg></span><span class="lbl">试用与激活</span><span class="tag" id="licBadge" data-tone="neutral" hidden></span></button>
+      <button data-v="set" class="navbtn" title="设置 · 外观 / 模型 / 配置来源" aria-label="设置"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4"/></svg></span><span class="lbl">设置</span></button>
+    </div>
+    <div class="sidegrip" id="sideGrip" title="拖动调整侧栏宽度（264–420px）"></div>
+  </aside>
+
+  <button class="side-scrim" id="sideScrim" type="button" aria-label="关闭导航" data-open="0" tabindex="-1"></button>
+  <div class="main">
+    <header class="top">
+      <button class="menubtn" id="btnFold" title="收起 / 展开侧栏" aria-label="收起或展开侧栏">☰</button>
+      <h1 id="title">新任务</h1>
+      <div class="meta" id="topMeta">连接中…</div>
+      <!-- ══ 收件箱入口（照 dsh-coopanion 的小信封）══
+           为什么放在顶栏而不是侧栏：它的作用是「任务跑完了叫你一声」——
+           而任务跑着的时候用户往往已经切到别处去了。顶栏是唯一在任何
+           页面都在的位置，侧栏在窄屏会收起、在别的视图里也可能被忽略。
+           ★ 这个按钮默认 `hidden`，`paintInbox()` 在真有东西时才亮出来 ——
+             0 件事还挂一个铃铛，就是在制造「有东西等你」的错觉。 -->
+      <button class="inboxbtn" id="btnInbox" type="button" hidden
+        title="收件箱 · 跑完的回复与要你处理的活儿" aria-label="收件箱">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 5.2 8 8.6l6-3.4"/><rect x="2" y="3.4" width="12" height="9.2" rx="1.2"/>
+        </svg>
+        <span class="n" id="inboxN" hidden></span>
+      </button>
+    </header>
+
+    <div class="scroll" id="scroll">
+
+      <!-- ══ 成果（默认视图：只回答"推进到哪 / 产出在哪 / 要你定夺什么"）══ -->
+      <section class="view on" id="v-chat">
+        <!-- ══ 工作台概览（2026-10-26 新增，只在首屏空态时出现）══
+             用户对着 Paper Workbench 说「还不如之前那个工作台，功能很不清晰」。
+             那一边首屏是 4 张统计卡 + 项目清单 —— 打开就知道手上有多少东西、
+             该往哪走。荣珂原来只有一句「这次想做成什么？」加大片留白，
+             东西全在侧栏和别的页里，首屏不承担任何信息。
+             ★ 数据全部来自真实接口，一格都不许写死：
+                /api/runs        → 跑过几次、成没成
+                /api/deliverables→ 产出几件
+                /api/figures     → 配了几组图
+                /api/kb/stat     → 库里几篇
+             ★ 读不到就写"读不到"，不显示假 0（见 wbOverview() 里的 data-stale）。
+             ★ 这一块在 #empty 里面 —— 一旦开跑，resetThread() 把 #thread 亮出来、
+               #empty 隐藏，概览自然跟着走，不需要额外接线。 -->
+        <details class="wbc" id="wbOverview">
+          <summary>查看我的资料与记录</summary>
+          <div class="wbcstat" id="wbStat" aria-label="工作台概览">
+            <div class="kbn" data-stale="1"><b>—</b><span>产出</span><i>读取中…</i></div>
+            <div class="kbn" data-stale="1"><b>—</b><span>文献库</span><i>读取中…</i></div>
+            <div class="kbn" data-stale="1"><b>—</b><span>配过的图</span><i>读取中…</i></div>
+            <div class="kbn" data-stale="1"><b>—</b><span>最近任务</span><i>读取中…</i></div>
+          </div>
+          <div class="wbcgo" id="wbGo" aria-label="常用入口">
+            <button class="wg" data-go="deliv"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 13 5v6L8 13.5 3 11V5Z"/><path d="M3 5l5 2.5L13 5M8 7.5v6"/></svg></span>翻翻做出来的东西</button>
+            <button class="wg" data-go="kb"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.8" width="9" height="10.4" rx="1"/><path d="M6 2.8v10.4M7.6 5.6h3.2"/></svg></span>查我手上的文献</button>
+            <button class="wg" data-go="fig"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M5 13.5V8M8 13.5V4M11 13.5V9.5"/></svg></span>看配好的图</button>
+            <button class="wg" data-go="traj"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="4" r="1.7"/><path d="M5.6 11 10.4 5"/></svg></span>上次每一步查了什么</button>
+          </div>
+        </details>
+        <div class="empty" id="empty">
+          <!-- W18-A · 标记与主标题同一行居中，照 DSH HeroShell 的 `.headline` -->
+          <div class="herohead">
+            <div class="em">荣</div>
+            <h2>你想让荣珂帮你完成什么？</h2>
+          </div>
+          <p>直接说需求即可。它会先整理任务单，<b>你确认后才开始执行</b>。</p>
+        </div>
+        <div id="cPreview"></div>
+        <!-- 对话外壳（进度条 / 过程抽屉 / 成果卡）由 resetThread() 现建 ——
+             静态再写一份会让同一批 id 在文件里出现两次（ui_check 的「id 唯一」会拦），
+             而运行期其实是"旧的被清掉、新的才建"，不是真重复。
+             只在一处建，检查器与运行期就一致了。 -->
+        <div class="thread" id="thread" hidden></div>
+        <!-- 一轮助手回复的骨架。★ 模板里保留 #resultCard / #askCard 两个字面 id，
+             它们是 ui_shot 的锚点，也是 ui_check 静态引用核对的对象；
+             克隆到页面上后**立刻摘掉**，再由 markCurrent() 只挂到当前轮
+             —— 页面任何时刻最多一份，历史轮靠 class 活着。 -->
+        <template id="tplTurn">
+          <div class="turn ai" data-turn="0">
+            <div class="aproc proc disclosure" data-open="1">
+              <button type="button" class="aproc-h" aria-expanded="true">
+                <span class="dot" aria-hidden="true"></span>
+                <span class="t">正在准备…</span>
+                <span class="sub"></span>
+                <span class="meta">
+                  <span class="m-step" hidden></span>
+                  <span class="m-time" hidden></span>
+                  <span class="m-ctx" hidden></span>
+                </span>
+                <span class="chev" aria-hidden="true">▸</span>
+              </button>
+              <div class="aproc-b"><div class="round"></div></div>
+            </div>
+            <!-- 介入卡在结果卡上方：它在等你回答，是此刻最要紧的事。 -->
+            <div class="askcard" id="askCard"></div>
+            <div class="rescard" id="resultCard"></div>
+          </div>
+        </template>
+      </section>
+
+      <!-- ══ 轨迹 ══ -->
+      <section class="view" id="v-traj">
+        <div class="page">
+          <h2 data-mark="07" data-eyebrow="Process">过程</h2>
+          <div class="sub">每一步查了什么、凭什么这么说：怎么理解你的要求、每一项核到什么、每一步的账。
+            <b>日常不用看</b>，但它随时可查 —— 判定与账目都在这里，不在成果卡里粉饰。</div>
+          <!-- ★ 首屏这句必须与 paintTraj() 的空白态说同一件事：这一页看的是
+               **某一次**运行，不是"所有任务"。写「还没有任务」在有 83 次运行、
+               64 条历史时是假的 —— 用户只会得到"这功能是空的"这个错误结论。 -->
+          <div id="trajBody"><div class="blank">这一页看的是<b>某一次</b>任务的每一步。<br>
+            在左边「历史」里点一条，这里就会列出它当时的目标契约、每一步调了什么、拿到什么。</div></div>
+        </div>
+      </section>
+
+      <!-- ══ 能力（W2 新页：数据一律来自 /api/capabilities，条目不在这里写死）══
+           这一页存在的理由与 clawsgo 相反：它是营销页，永远只亮活着的东西；
+           荣珂把"没接的"一并列出来，并写清楚为什么没接。 -->
+      <section class="view" id="v-cap">
+        <div class="page">
+          <h2 data-mark="04" data-eyebrow="Capabilities">本事清单</h2>
+          <div class="sub">它能干什么、现在哪些是真跑得通的。每一项都经过<b>实际核对</b>：
+            <b>核查不通过就标"未接"并写明原因，不冒充</b>。</div>
+          <div class="card">
+            <h3>总览<span class="hint" id="capHint"></span></h3>
+            <div class="inner"><div id="capStat" class="kbg"></div></div>
+          </div>
+          <div id="capBody"><div class="blank">读取中…</div></div>
+        </div>
+      </section>
+
+      <!-- ══ 门禁（W2 新页）══
+           ★ 判定的**条数与逐条文案都不在这里**：来自 /api/gates，而那一头逐字现读
+             `rongke/gate.py` 的模块 docstring。这里写死一份就是第二套真相。
+           下面这段说明只写"类别怎么分"（S0 §5″ 的分类表），不写判定内容本身。 -->
+      <section class="view" id="v-gate">
+        <div class="page">
+          <h2 data-mark="06" data-eyebrow="Quality Gate">质量把关</h2>
+          <!-- ★ 这里**不写任何数字**。原来写死了「9 道」加六个编号，
+               而接口实数已经是 10 条（大纲门是后加的）—— 同一屏上三个数字。
+               真数只由 #gateDefsHint（/api/gates）给，见 loadGate()。 -->
+          <div class="sub">说"这活干完了"之前，它自己要先过一道道检查，过不了就不许交。
+            <span class="subcap">分类口径（给想核对规则的人）：证据类硬门 · 软检查（只警告，不阻断）·
+              阶段技能门 · 写作体检门 · 图面门 · 组会 PPT 门。</span></div>
+          <div class="card">
+            <!-- ★ 标题不带数字：条数由接口给，在右侧 `.hint` 里（N 条）。 -->
+            <h3>它的检查表<span class="hint" id="gateDefsHint"></span></h3>
+            <div id="gateDefs"><div class="blank">读取中…</div></div>
+          </div>
+          <div class="card">
+            <h3>最近一次的检查结果<span class="hint" id="gateLastHint"></span></h3>
+            <div class="inner"><div id="gateLast"><div class="blank">读取中…</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 工具 ══ -->
+      <section class="view" id="v-tools">
+        <div class="page">
+          <h2 data-mark="05" data-eyebrow="Instruments">科研工具</h2>
+          <div class="sub">查文献、核 DOI、画图、排 PPT、读写工作区里的文件 —— 它干活用的手上家伙。
+            标 <span class="tag" data-tone="warning">W</span> 的会改动外部世界，受工作区围栏约束。</div>
+          <div class="card">
+            <h3>它能用哪些<span class="hint" id="toolsHint"></span></h3>
+            <div class="filt"><span class="ipt"><input id="toolsFilt" placeholder="按名称 / 说明 / 参数过滤…"></span></div>
+            <div id="toolsBody"><div class="blank">读取中…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 知识库 ══
+           这里检的是「你手上已经有的 PDF」，与工具页里的 literature_search
+           （世上有什么）是两件事。面板本身不含任何查询逻辑：数据一律来自
+           `/api/kb/*`，而那一头转发的就是 agent 自己用的 kb_* 工具。 -->
+      <section class="view" id="v-mentor"><div class="page" id="mentorPage"></div></section>
+      <section class="view" id="v-kb">
+        <div class="page">
+          <h2 data-mark="01" data-eyebrow="Library">文献库</h2>
+          <!-- ★ 2026-10-14 文案返工（用户原话「感觉都看不懂写的啥」）。
+               改动前这里是一段 250 字 / 13 行的开场白，里面写着「W23-B 起这一页多了
+               一段…」「同一篇没必要两边都存正文」—— 那是**开发者的版本变更记录**，
+               不是给用户看的说明；还夹带 kb_add / kb_ingest / kb_search /
+               literature_search / convert_pdf 五个内部工具名。
+              现在只留"这一页是干什么的"一句 + 两条该走哪去的指引。
+               版本变更记录挪进本注释（它本来就该在这儿）：
+               · 库里查（kb_search）与世上查（literature_search）是两件事，
+                 本页两头都管得着；世上查到的**先列候选给用户勾**，勾中才入库。
+               · PDF 转 Markdown（convert_pdf / Obsidian 笔记）是给人精读用的，
+                 不是入库格式 —— 同一篇没必要两边都存正文。 -->
+          <div class="sub">这里是你<b>已经下载好的论文</b>，可以按段落查原文、命中直接给页码。
+            要找<b>还没下载的新文献</b>，用下面的「新增文献 · AI 检索候选」。</div>
+
+          <div class="card">
+            <h3>库况<span class="hint" id="kbHint"></span></h3>
+            <div id="kbStat"><div class="blank">读取中…</div></div>
+            <div id="kbAiNote"></div>
+          </div>
+
+          <div class="card">
+            <h3>馆藏与检索<span class="hint" id="kbSearchHint"></span></h3>
+            <div class="sub">进入页面就列出你的文献；输入关键词可按段落检索，命中直接给页码。
+              找新文献用下面的「新增文献 · AI 检索候选」。</div>
+            <div class="filt">
+              <span class="ipt"><input id="kbQ" placeholder="段落级检索，例如：原生质体融合 灭活"></span>
+              <button class="mini" id="kbGo">检索</button>
+              <button class="mini" id="kbAll">列出全部</button>
+            </div>
+            <div id="kbOut"></div>
+          </div>
+
+          <div class="card">
+            <h3>新增文献 · AI 检索候选<span class="hint" id="kbFindHint"></span></h3>
+            <div class="sub">说一句想找什么，它会去检索，
+              然后把找到的<b>列成候选给你勾</b> —— <b>只有你勾中的才会下载进来</b>。
+              已经在库里的会标出来，省得白勾。</div>
+            <div class="filt">
+              <span class="ipt"><input id="kbFindQ" placeholder="例如：冬虫夏草 遗传转化 基因组"></span>
+              <button class="mini pri" id="kbFindGo">检索候选</button>
+            </div>
+            <div id="kbFindOut"></div>
+          </div>
+
+          <div class="card">
+            <h3>新增文献 · 本地 PDF</h3>
+            <div class="sub">选中 PDF 再点「入库」：它会读全文、建索引，
+              之后就能按段落查到。
+              <b>不会覆盖同名文件</b>，重复的会跳过并告诉你。
+              没有网就用「不联网」，省掉等网络的时间。</div>
+            <div class="filt">
+              <input id="kbFile" type="file" accept=".pdf" multiple
+                aria-label="选择要入库的 PDF 文件" title="选择要入库的 PDF 文件">
+              <button class="mini" id="kbSend">入库</button>
+              <button class="mini" id="kbSendOff"
+                title="不抓 DOI、不反查标题 —— 网络不通时用">不联网</button>
+            </div>
+            <div id="kbUpOut"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 交付物（W2 新页：跨任务的产出总览）══
+           读正文只有一个入口：稿件台（openDesk / deskReadFile）。
+           这里不再造第二个预览器 —— 两套读法早晚对同一份稿给出两种答案。 -->
+      <section class="view" id="v-deliv">
+        <div class="page">
+          <h2 data-mark="02" data-eyebrow="Deliverables">产出</h2>
+          <div class="sub">历次做出来的东西都在这里，按课题归档 —— 点开就能看全稿。
+            取回走的是与成果卡<b>同一条</b>围栏通路：能被列出来的，才能被取回。
+            没归档的老任务也照样列出来，并如实说明它没有产出物。</div>
+          <div class="card">
+            <h3>总览<span class="hint" id="delivHint"></span></h3>
+            <div class="inner"><div id="delivStat" class="kbg"></div><div id="delivKinds" class="kbt"></div></div>
+          </div>
+          <div id="delivBody"><div class="blank">读取中…</div></div>
+        </div>
+      </section>
+
+      <!-- ══ 图表（W2 新页：配图资产 + 图面体检）══
+           `audits:[]` 必须显式说"没过体检"，不许静默省略 ——
+           省略等于让人以为没问题。`fresh` 三态（true/false/null）由服务端给，界面不重算。 -->
+      <section class="view" id="v-fig">
+        <div class="page">
+          <h2 data-mark="03" data-eyebrow="Figures">图与配图</h2>
+          <div class="sub">上面是<b>分析成图</b>：给一张数据表，它自己挑图型、画出来、再过一遍图面体检。
+            下面是历次配图资产，以及它们各自过没过图面体检。
+            新鲜度沿用同一套图面检查的判定，界面不另写一套；
+            没有体检报告的图也照样列出来 —— 列出来并标明"没过"，比不列要诚实。</div>
+          <div class="card" id="anCard">
+            <h3>分析成图<span class="hint" id="anHint"></span></h3>
+            <div class="inner">
+              <div id="anStat" class="kbg"></div>
+              <div id="anBody"><div class="blank">读取中…</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3>历次配图<span class="hint" id="figHint"></span></h3>
+            <div class="inner"><div id="figStat" class="kbg"></div></div>
+          </div>
+          <div id="figBody"><div class="blank">读取中…</div></div>
+        </div>
+      </section>
+
+      <!-- ══ 历史 ══ -->
+      <!-- ══ 历史页已并入侧栏「会话」列表（ZCode 式：历史即导航）。
+           回放、过滤、展开详情的职责由会话列表承接；点会话行回放，
+           接着说直接在会话里输入。这里不留第二个入口 ——
+           两个入口就是两套"任务记录在哪"的真相。 -->
+
+      <!-- ══ 设置（W3 新增第 10 个视图）══
+           这一页存在的全部理由：模型原先只在 `config.json` 里，改一次要翻文件、
+           重启服务 —— 用户原话「现在连设置都没有，换模型都不行」。
+           ★ 内容一律由 loadSet() 现填（照 resetThread 的做法）：这里静态再写一份，
+             就是第二套 id（ui_check 的「id 唯一」会拦）+ 第二套配置真相。 -->
+      <section class="view" id="v-set">
+        <div class="page">
+          <h2 data-mark="10" data-eyebrow="Preferences">设置</h2>
+          <div class="sub">分三节：<b>通用</b>（外观 / 过程默认）、<b>模型与服务端</b>（换模型 / 端点 /
+            推理档位 / 密钥变量名）、<b>配置从哪一层来</b>。<b>荣珂不存密钥</b>：这一页能改的只有
+            密钥所在的<b>环境变量名</b>，值仍然只从你自己的环境变量里读。
+            模型是在 agent 构造时冻住的，所以保存之后控制台会<b>当场重建一次 agent</b> ——
+            不用你重启，也不留"改了却没生效"的哑谜。</div>
+          <div id="setBody"><div class="blank">读取中…</div></div>
+        </div>
+      </section>
+
+      <!-- ══ 首次配置（2026-10 新增）
+           这一页存在的理由：做 PPT 要 python-pptx、要组会 PPT 的审计脚本、
+           要有品牌模板；画图要 matplotlib+PyMuPDF、Origin 还要 COM 通道。
+           这些东西缺了**全都不报错**，只会在任务里变成一句模型看不懂的
+           ModuleNotFoundError，或者第 9 条硬门永远判 SKIPPED。
+           ★ 判据全在服务端（/api/setup）—— 真值在盘上与子进程里，前端够不到。
+           ★ 内容一律由 loadSetup() 现填，这里只留一个空壳（第二份就是第二套真相）。 -->
+      <section class="view" id="v-lic">
+        <div class="page">
+          <h2 data-mark="09" data-eyebrow="License">授权</h2>
+          <div class="sub">这一页管的是<b>这个软件本身的授权</b>，与模型 API 开销无关 ——
+            你自己填的 API key，钱是你直接付给模型厂商的，不经过荣珂。</div>
+          <div id="licBody"><div class="blank">正在读授权状态…</div></div>
+        </div>
+      </section>
+
+      <section class="view" id="v-setup">
+        <div class="page">
+          <h2 data-mark="08" data-eyebrow="Setup">首次配置</h2>
+          <div class="sub">这里检查<b>做 PPT 和画图要用的工具</b>配好了没有：讲稿备注要用的库、
+            组会 PPT 的体检脚本、品牌模板、画图审计的解释器、Origin 的出图通道。
+            每一条都当场真探一遍，缺什么就告诉你缺什么、去哪儿补。
+            <b>不配也能用别的功能</b> —— 这一页只报缺，不拦活。</div>
+          <div id="setupBody"><div class="blank">正在检查…（要起几次子进程，约几秒）</div></div>
+        </div>
+      </section>
+
+      <!-- ══ composer（sticky 浮于内容之上）══ -->
+      <div class="composer" id="composer">
+        <div class="cwrap">
+          <button class="tobottom" id="toBottom" hidden title="回到最新" aria-label="回到最新">↓</button>
+          <!-- 斜杠命令菜单：输 / 时浮出（内容现填）。锚定在输入框上方。 -->
+          <div class="slashmenu" id="slashMenu" hidden></div>
+          <div class="cbox" id="cbox">
+            <textarea id="goal" rows="1" placeholder="例如：帮我查找近五年关于冬虫夏草人工培育的关键论文，并整理成对比表" title="Enter 整理任务单 · Shift+Enter 换行 · 输 / 唤出命令" aria-describedby="hint"></textarea>
+            <!-- 场景模块条（点胶囊出现）：任务名 + 风格 + 内联槽位，✕ 可叉掉。
+                 模板文字由 build() 后台拼装 —— 那是给内核的，不是给人的。 -->
+            <div class="pfbar" id="pillForm" hidden></div>
+            <!-- DSH ui-conversation 的签名结构：底部 toolbar 一行，次级动作靠左（ghost），
+                 发送键靠右（primary · 品牌色底 · 高 36px）。id 与接线一个字没动。 -->
+            <div class="ctool">
+              <span class="grp">
+                <button class="btn ghost sm" id="btnMat" title="把稿件 / 数据 / PDF 递进来（也可以直接拖进来）">＋ 材料</button>
+                <button class="btn ghost sm" id="btnPreview" title="重新整理任务单" hidden>预审任务单</button>
+                <!-- ★ W36 · 任务模式 / 仅问答：用户按的，不是我们猜的。
+                     用户原话：「直接加个任务模式和仅问答不就行了」—— 之前"这一轮算不算
+                     任务"全靠契约起草器去猜，它对一句问话只能给出空验收标准，
+                     而证据门对空验收标准一律打回 ⇒ 问"下一步该做什么"永远过不了门。
+                     两个按钮一组（`aria-pressed` 表达选中），默认"任务模式"，
+                     也就是**行为与今天完全一致**；只有用户亲手按"仅问答"才换判定。 -->
+                <span class="modesw" id="modeWrap" role="group" aria-label="这一轮按什么走">
+                  <button class="btn ghost sm on" id="modeTask" data-mode="task" type="button"
+                          aria-pressed="true" title="按任务走：要有产物、要有证据，交付会被证据门核对">任务模式</button>
+                  <button class="btn ghost sm" id="modeAnswer" data-mode="answer" type="button"
+                          aria-pressed="false" title="只是问我：直接回答，不要产物、不要验收标准；编造照样会被抓">仅问答</button>
+                </span>
+                <!-- 导师模式：会话级、默认关。库内优先，外网补充也须标出处。 -->
+                <span class="mentor" id="mentorWrap" data-on="0"
+                      title="导师模式：优先依据文献库，不足时可联网补充并标出处。开关跟随本场会话。">
+                  <!-- 属性顺序是**承重的**，别"顺手整理"：`class="switch" role="switch"` 连写
+                       与设置页那只开关是同一个字面量。ui_check 的 W14E·switch 负控按这个
+                       字面量做**全量替换**（它摘掉标记里的 class 来证明判据打得穿），
+                       中间插进 id 就会只剩一半被摘 → 负控变恒过 → 自检报漏报。 -->
+                  <span class="switch" role="switch" id="mentorSwitch" tabindex="0"
+                        aria-checked="false" aria-labelledby="mentorLab">
+                    <span class="thumb"></span></span>
+                  <span class="mlab" id="mentorLab">导师模式</span>
+                  <span class="tag" id="mentorTag" data-tone="neutral">关</span>
+                </span>
+              </span>
+              <span class="grp">
+                <button class="btn primary md send" id="btnSend" title="先整理任务单，确认后才执行">整理任务单</button>
+                <button class="btn outline md stop" id="btnStop" hidden>停止</button>
+              </span>
+            </div>
+          </div>
+          <!-- ★ W22-B §3.5 · 导师模式的课题条（**内核半成品接出来的最小一块**）。
+               内容全部现填（`paintMentorBar()` 读 /api/topic），这里只留一个空壳：
+               静态写死一份课题名就是第二套真相 —— 台账住在 `topics/`，界面上那份必须是从内核读回来的。 -->
+          <div class="mbar" id="mentorBar" data-on="0"></div>
+          <!-- ══ 场景胶囊：紧贴输入框下面（参照站的形状，名字全是荣珂自己的）══
+               ★ 八个名字**逐字取自 `rongke/stages.py` 的 `Stage(id, 中文名, 技能)` 注册表**，
+                 不是照抄参照站那六个词（参照站是 PPT/深度研究/文档/构建应用/表格/设计 ——
+                 荣珂既没有"构建应用"也没有"表格"这两条轴）。出处：
+                   文献检索   stages.py:88  Stage("search",    "文献检索", "nature-academic-search")
+                   引用核验   stages.py:103 Stage("verify",    "引用核验", "nature-ref-verifier")
+                   精读       stages.py:94  Stage("read",      "精读",     "nature-paper-card")
+                   起草写作   stages.py:106 Stage("draft",     "起草写作", "nature-writing")
+                   全稿润色   stages.py:111 Stage("polish",    "全稿润色", "nature-polishing")
+                   统计审查   stages.py:114 Stage("stats",     "统计审查", "nature-statistics")
+                   配图       stages.py:117 Stage("figure",    "配图",     "nature-figure")
+                   汇报 PPT   stages.py:135 Stage("slides",    "汇报 PPT", "nature-paper2ppt")
+               每一个都对应一个**真装在内核里的专属技能**（阶段路由 1:1 独占，见「门禁」第 6 条），
+               所以点它不是装饰：填进去的目标会真被路由到那条技能上。
+               ★ `data-goal` 是承重的 —— `ui_shot.py` 量的是"点下去填得进去吗"，
+                 空 data-goal 的胶囊会被判不可用（冷启动 30 秒那条判据）。
+               ★ W14-E：`.chip` 也是承重的（本页靠 `querySelectorAll(".chip")` 接线，
+                 `ui_shot.py:509` 按 `#tplBody .chip` 数），所以只**往上加** DSH 的
+                 `.apill.int`（可点药丸：24 高 / 悬停走 --interactive-bg-hover），
+                 旧名一个不摘。两条同权时新件在后、由它定形。 -->
+          <div class="pillrow" id="tplBody" aria-label="常用科研场景">
+            <span class="pillcap">常用场景</span>
+            <button class="chip apill int" data-form="文献检索" data-goal="检索 Ophiocordyceps sinensis 近五年的关键论文，整理成一张对比表：作者、年份、方法、样本量、主要结论，每条都要能追到 DOI">查文献</button>
+            <button class="chip apill int" data-form="通俗读懂" data-goal="用平常人能懂的话讲清楚下面这份材料的重点：它说了什么、结论是什么、值得注意什么：
+（把 PDF 拖进材料区，或把内容粘贴在这里）">通俗读懂</button>
+            <button class="chip apill int" data-form="润色文字" data-goal="把下面这段话润色得更通顺、更干净，保留原意，直接给出改后的版本：
+（把原文粘贴在这里）">润色文字</button>
+            <button class="morepill" id="btnMorePills" type="button" aria-expanded="false" aria-controls="morePills">更多场景 ▾</button>
+            <span id="morePills" hidden>
+            <button class="chip apill int" data-form="查证说法" data-goal="查证下面这个说法是否属实：给出可靠来源、原文出处与出处里的关键句；查不到就直说查不到，不要猜：
+（把说法写在这里）">查证说法</button>
+            <button class="chip apill int" data-form="引用核验" data-goal="核验这份参考文献列表里每一条的 DOI 是否真实有效、是否被撤稿，把有问题的挑出来并给出正确出处：
+（把列表粘贴在这里）">引用核验</button>
+            <button class="chip apill int" data-form="深入精读" data-goal="精读下面这篇论文，拆出它的方法、样本量与指标、主要结论和局限，每条结论都标出它在原文里的位置，并给出两个可接着做的研究问题：
+（贴 DOI 或标题）">深入精读</button>
+            <button class="chip apill int" data-form="起草写作" data-goal="按这个目标起草一份约 1200 字的正文，带可核验的引注，交付时附稿面体检报告：
+（题目与要点写在这里）">起草写作</button>
+            <button class="chip apill int" data-form="统计审查" data-goal="审查我这份结果的统计报告：实验单元与重复有没有分清、不确定度怎么给的、检验方法与多重比较是否匹配，逐项指出问题与改法：
+（把结果描述贴在这里）">统计审查</button>
+            <button class="chip apill int" data-form="配图" data-goal="按投稿要求做一张出版级配图：x=[0.5,1.2,2.4,3.1,4.8]，y=[0.31,0.42,0.55,0.61,0.73]，单分面，导出 PNG，并给出图注与源数据">配图</button>
+            <button class="chip apill int" data-form="汇报 PPT" data-goal="把下面这份内容做成组会汇报 PPT：6~20 页、每页配讲稿备注、标题不超过 40 字，产出 .pptx 并附 deck 体检报告：
+（把论文要点或讲稿大纲贴在这里）">汇报 PPT</button>
+            </span>
+          </div>
+          <!-- W18-A · 能力边界从首屏"标题与输入框之间"的黄金位置，搬到这里（DSH 的 `.notice` 位）。
+               `ui_shot.py:516` 判"空态有 .bounds"，所以是**只搬不删**；跑任务时随胶囊一起隐去。 -->
+          <details class="bounds">
+            <summary>荣珂能做什么、不能做什么</summary>
+            <b>拿手的事：</b>查文献并核验 DOI、读 PDF / 数据 / 稿件、写作与润色、配图和汇报 PPT。<br>
+            <span class="no"><b>不会做的事：</b>不懂装懂。结论要有出处；访问不了付费全文，也不会把没做完说成做完了。</span>
+          </details>
+          <div class="mats" id="mats" hidden></div>
+          <div class="hint" id="hint"></div>
+        </div>
+      </div>
+      <input type="file" id="matFile" multiple hidden>
+      <div class="dropmask" id="dropmask"><div>松手就放进工作区</div></div>
+
+      <!-- ══ 登录层（2026-10 新增）
+           只在「设了本地密码」时出现。没设密码时这层永远不显示 ——
+           这是单机工具的默认，不是漏洞，界面上会写明这一点。
+           判据全在服务端（/api/auth）：前端不自己推断"该不该锁"，
+           因为"账号有没有密码"这件事前端够不到。 -->
+      <div class="logingate" id="loginGate" hidden>
+        <form class="loginbox" id="loginForm" autocomplete="off">
+          <h2>需要登录</h2>
+          <div class="sub" id="loginWhy">这个控制台设了本地密码。</div>
+          <input type="password" id="loginPw" placeholder="本机密码" autocomplete="current-password">
+          <div class="loginerr" id="loginErr" hidden></div>
+          <button type="submit" class="pri" id="loginBtn">登录</button>
+          <div class="sub" id="loginNote">密码只用于打开这台机器上的控制台；
+            荣珂不存明文，只存 pbkdf2 的盐与摘要。忘记密码可以从命令行重设：
+            <code>rongke --billing password 新密码</code></div>
+        </form>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ 稿件台：右侧可折叠阅读抽屉（正文 / 大纲 / 查找 / 导出）══
+       平时宽度为 0（见 CSS），所以它不占位、不改现有布局；
+       内容由 openDesk() 现填 —— 这里不放第二份 id 的内容副本，
+       因为 ui_check 的「id 唯一」检查盯的就是这种"复制一份更省事"。 -->
+  <!-- ══ 命令面板（Ctrl+K / “/”）══ 照 ZCode Command/QuickPick 的规格：
+       居中弹层 max-w-lg、列表 max-h min(460px,64vh)、组标题 14px medium subtle、
+       条目 min-h-7 圆角-lg 左图标右快捷键、空态 py-6 居中。 -->
+  <div class="cpmask" id="cpMask" hidden>
+    <div class="cp" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div class="cpin">
+        <span class="g">⌕</span>
+        <input id="cpInput" placeholder="搜索命令…" autocomplete="off" spellcheck="false">
+        <span class="cesc">Esc</span>
+      </div>
+      <div class="cplist" id="cpList"></div>
+    </div>
+  </div>
+
+  <!-- ══ 右键菜单 ══ 照 ZCode ContextMenu：min-w-44 rounded-lg bg-menu p-1，
+       条目 min-h-7 圆角-md 悬停 bg-menu-hover，分隔线 h-px。 -->
+  <div class="ctxmenu" id="ctxMenu" hidden></div>
+
+  <!-- ══ 收件箱抽屉（照 dsh-coopanion 的「小信封」）══
+       结构只有三层：头（标题 + 未读计数）/ 列表 / 每条自己的动作。
+       ★ 不给它加「全部已读」「清空」之类的大按钮：这个面板的寿命很短——
+         打开、看一条、点「继续对话」走人。按钮越多，它越像一个要维护的页面。
+       ★ 空态也留一句人话（`.empty2`），因为 entry 按钮只在有东西时才出现，
+         正常情况下用户看不到空态；看不到的状态更要写清楚，省得以后加了
+         「手动打开」入口时是一片空白。 -->
+  <aside class="inbox" id="inbox" data-open="0" aria-label="收件箱" aria-hidden="true">
+    <div class="ih">
+      <div>
+        <div class="t">给你带回来了</div>
+        <div class="c" id="inboxSub">回复与待办</div>
+      </div>
+      <button class="x" id="btnInboxClose" type="button" aria-label="关闭收件箱">✕</button>
+    </div>
+    <div class="ib" id="inboxList"></div>
+  </aside>
+
+  <aside class="desk" id="desk" data-open="0" aria-label="稿件台">
+    <div class="dghost" id="deskGrip" title="拖动调宽"></div>
+    <div class="dhead">
+      <button class="mini" id="deskFocus" type="button" title="专注阅读 / 返回分栏" aria-label="专注阅读" aria-pressed="false">专注</button>
+      <div class="dtitle">
+        <b id="deskTitle">稿件</b>
+        <span class="dmeta" id="deskMeta"></span>
+      </div>
+      <div class="dacts">
+        <!-- ★ 照 DSH：面板头部只放"最要紧的两三个"。DSH 的右栏面板一共只有 2 个控件。
+             荣珂这排原来并排 7 个（历次·查找·A−·A+·复制·下载·✕），七个一样重 ⇒ 没有重点，
+             最难找的恰恰是"怎么关掉"。
+             现在：复制 / 下载 / ✕ 常驻，其余进「⋯」—— 收起的是**改用频次低的**，
+             不是删功能（历次稿子、查找、字号都还在菜单里）。 -->
+        <!-- 版面 / 原页 切换：同一份东西的两种看法（重排过的稿面 ↔ 未改一字的原件页面）。
+             只有在"原页这条路真走得通"时才出现 —— 见 deskModeAvail()：
+             没有原件的稿子挂一个切不过去的开关，比不挂更糟。 -->
+        <div class="dmode" id="deskMode" hidden role="group" aria-label="阅读方式">
+          <button class="mm" id="deskModeDoc" data-m="doc" title="按期刊版式重排的稿面">版面</button>
+          <button class="mm" id="deskModeOrig" data-m="orig" title="论文原件的页面，一个字都不改">原页</button>
+        </div>
+        <button class="mini" id="deskCopy" title="复制全文">复制</button>
+        <button class="mini" id="deskDl" title="下载为 Markdown">下载</button>
+        <button class="mini" id="deskMore" title="更多：历次稿子 / 查找 / 字号" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <button class="mini" id="deskClose" title="收起（Esc）">✕</button>
+        <div class="dmor" id="deskMorePanel" hidden>
+          <select class="druns" id="deskRun" title="翻回去看历次稿子 —— 只换这一栏的内容，不动左边的对话">
+            <option value="">历次稿子…</option></select>
+          <button class="dmi" id="deskFindBtn" title="在稿件里查找（Ctrl+F）">查找</button>
+          <button class="dmi" id="deskOpenLocal" title="打开电脑上的一篇论文（PDF / Word / PPT），按原件版面读">打开本地论文…</button>
+          <div class="dmr"><span>字号</span>
+            <button class="mini" id="deskFontDown" title="字号减小">A−</button>
+            <button class="mini" id="deskFontUp" title="字号增大">A+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="dfind" id="deskFind">
+      <input id="deskFindInput" placeholder="查找…（回车下一处）">
+      <span class="cnt" id="deskFindCnt"></span>
+      <button class="mini" id="deskFindPrev" title="上一处">↑</button>
+      <button class="mini" id="deskFindNext" title="下一处">↓</button>
+    </div>
+    <div class="dprog"><i id="deskProg"></i></div>
+    <div class="dbody">
+      <nav class="dtoc" id="deskToc"></nav>
+      <div class="dtext" id="deskText"><div class="dc" id="deskInner"></div></div>
+      <!-- ══ 原页阅读 ══
+           用户的原话是「pdf原页」+「稿件台我也要这样的」。
+           为什么不是把 PDF 抽成文本再排一遍：抽取的结果实测是
+           页眉页脚混排、双栏压平、上下标丢失（`2×10⁵` → `2×105`）、图表全没了。
+           论文的意思有一半在版面上，抽掉版面就等于换了一篇文章。
+           ⇒ **原件怎么排，就怎么看**：这里只做翻页/缩放，不改一个字。
+           文本抽取仍然保留，但只喂给 agent 检索用。 -->
+      <div class="dorig" id="deskOrig" hidden>
+        <div class="oorigbar" id="origBar">
+          <button class="mini" id="origPrev" title="上一页（←）">↑</button>
+          <input id="origPage" class="opage" inputmode="numeric" value="1" title="跳到第几页">
+          <span class="otot" id="origTotal">/ ?</span>
+          <button class="mini" id="origNext" title="下一页（→）">↓</button>
+          <span class="osep"></span>
+          <button class="mini" id="origZoomOut" title="缩小">−</button>
+          <span class="ozoom" id="origZoomTxt">适宽</span>
+          <button class="mini" id="origZoomIn" title="放大">+</button>
+          <span class="osep"></span>
+          <button class="mini" id="origFit" title="回到适宽">适宽</button>
+          <button class="mini" id="origRaw" title="在新标签页打开原件">原件</button>
+        </div>
+        <div class="ostage" id="origStage">
+          <div class="oblank" id="origBlank"></div>
+          <img class="opageimg" id="origImg" alt="原页" hidden>
+          <div class="ofilm" id="origFilm" hidden></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <!-- 「打开本地论文」的取文件口。**只挑不读**：选中的文件由 JS 传去 /api/upload
+       落进素材区（runs/_inbox/）—— 那条路是既有的、有围栏的；浏览器不许把本地路径
+       交给服务端去打开（服务端也不接这种请求）。 -->
+  <input type="file" id="deskLocalFile" hidden
+         accept=".pdf,.docx,.doc,.pptx,.ppt,.odt,.odp,.ods">
+</div>
+
+<script src="/static/core.js"></script>
+<script src="/static/workspace.js"></script>
+<script src="/static/library.js"></script>
+<script src="/static/mentor.js"></script>
+<script src="/static/reader.js"></script>
+<script>
+/* ═════════════ 启动 ═════════════ */
+paintThemeBtn(); applyProcOpen();
+if (window.RongkeLibrary) RongkeLibrary.init();
+if (window.RongkeMentor) RongkeMentor.paint();
+const _lf = $("#loginForm");
+if (_lf) _lf.addEventListener("submit", submitLogin);
+/* 登录自检**必须最早跑**，且必须 `await`：下面那些 loadXxx 在设了密码时
+   会全部 401，先让登录层立起来，用户才不会对着一堆空面板等。 */
+checkLoginGate().then(() => {
+  if (!NEED_LOGIN) {
+    loadStatus(); autoGrow(); wireDrop(); loadMaterials();
+    /* 授权状态在启动时就要读一次 —— 否则侧栏那个「还剩 N 天 / 到期」
+       徽标要等用户自己点进授权页才出现。这个数字的意义恰恰在于
+       **没点进去的时候也能看见**。 */
+    loadLic();
+  }
+});
+/* 稿件台必须**先于** replay 接线：deskInit 负责把头部按钮、拖拽、查找、大纲都接好；
+   右栏几何按 DSH 刷新即重置（不自动展开），等某次跑完 renderResult→deskSync 或用户
+   点「读全稿」时才按 45% 首开宽打开。 */
+deskInit();
+const _rid = new URLSearchParams(location.search).get("run");
+if (_rid && !NEED_LOGIN) replay(_rid);
+setInterval(() => { if (!LIVE && !NEED_LOGIN) loadStatus(); }, 15000);
+</script>
+</body>
+</html>

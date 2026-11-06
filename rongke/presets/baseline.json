@@ -1,0 +1,57 @@
+{
+  "id": "baseline",
+  "name": "当前内核行为（等价基线）",
+  "description": "九行能力的值全部等于 2026-11-04 改代码之前的硬编码常量。选它 = 与旧版逐字节等价。",
+  "order": 10,
+  "scenes": ["writing"],
+  "plugins": [
+    {
+      "id": "citation",
+      "name": "@rongke/metric-citation",
+      "config": { "bracket_pairs": ["[n]"], "count_ref_table": false }
+    },
+    {
+      "id": "chars",
+      "name": "@rongke/metric-chars",
+      "config": { "unit": "chars_eq", "display_unit": "chars" }
+    },
+    {
+      "id": "gate",
+      "name": "@rongke/gate-kernel",
+      "config": {
+        "measured_metrics": ["chars", "chars_delta_pct", "paragraphs", "sentences", "citations", "has_refs"],
+        "evidence_fallback": true
+      }
+    },
+    {
+      "id": "followup",
+      "name": "@rongke/contract-followup",
+      "config": { "merge_new_constraints": false, "keep_parent": true, "redraft_target": false }
+    },
+    {
+      "id": "mount",
+      "name": "@rongke/mount-tools",
+      "config": { "refresh": "once", "initial_domains": ["core", "research", "figure", "kb", "topic"] }
+    },
+    {
+      "id": "context",
+      "name": "@rongke/context-compact",
+      "config": { "target_chars": 120000, "compact_before_followup": false }
+    },
+    {
+      "id": "writing-metrics",
+      "name": "@rongke/tool-writing-metrics",
+      "config": { "expose": false, "metrics": [] }
+    },
+    {
+      "id": "prompt",
+      "name": "@rongke/prompt-sections",
+      "config": { "complete": false, "sections": ["identity", "tools", "runtime", "safety", "skills"] }
+    },
+    {
+      "id": "stage",
+      "name": "@rongke/stage-skill-gate",
+      "config": { "hard": false, "warn_on_missing": true, "dedupe_warnings": false }
+    }
+  ]
+}

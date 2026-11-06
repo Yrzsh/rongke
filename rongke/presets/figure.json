@@ -1,0 +1,31 @@
+{
+  "id": "figure",
+  "name": "科研配图",
+  "description": "初始域收窄到 figure/core/kb，阶段技能改硬门。",
+  "order": 33,
+  "scenes": [
+    "figure"
+  ],
+  "base": "baseline",
+  "stages": ["figure"],
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "mount",
+      "config": {
+        "initial_domains": [
+          "figure",
+          "core",
+          "kb"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "stage",
+      "config": {
+        "hard": true
+      }
+    }
+  ]
+}

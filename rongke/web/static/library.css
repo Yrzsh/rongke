@@ -1,0 +1,200 @@
+/* 文献库主工作区样式（2026-10-29）
+   ════════════════════════════════════════════════════════════════════
+   全部作用域挂在 `.kbwork`（以及必要的 `#v-kb`）下：
+     · `.card / .mini / .blank / .filt / .kbtable / .kbrow` 这些是全站共用
+       零件（交付物、能力清单、图与配图都在用），直接改它们会连带改别页；
+     · 三档状态胶囊本来就有 `#v-kb .kbsrc`，这里只在 `.kbwork` 内给出
+       同一套墨色，避免与旧列表的观感分叉。
+   颜色一律取 tokens.css / workspace.css 的变量，**不写死色值** —— 深浅两档
+   靠变量换值，写死就会在暗色下变成白斑。
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── 外壳 ── */
+.kbwork{--kwgap:12px}
+.kbwork .kwhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding-top:10px;padding-bottom:10px;border-bottom:var(--hair) solid var(--line-2)}
+.kbwork .kwtabs{display:flex;align-items:center;gap:2px;min-width:0;
+  background:var(--bg-platform);border-radius:var(--r-sm);padding:2px}
+.kbwork .kwtab{border:0;background:transparent;color:var(--fg-3);
+  font:inherit;font-size:var(--fs-xs);line-height:var(--lh-xs);
+  padding:5px 12px;border-radius:calc(var(--r-sm) - 2px);cursor:pointer;
+  white-space:nowrap;transition:background .12s var(--ease),color .12s var(--ease)}
+.kbwork .kwtab:hover{color:var(--fg)}
+.kbwork .kwtab[aria-selected='true']{background:var(--bg-overlay);color:var(--fg);
+  font-weight:600;box-shadow:var(--elevation-stroke)}
+.kbwork .kwtab:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.kbwork .kwhint{margin-left:auto;font-size:var(--fs-xxs);color:var(--fg-3);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.kbwork .kwbody{min-width:0}
+.kbwork .kwpanel{min-width:0}
+.kbwork .kwpanel[hidden]{display:none}
+
+/* ── 馆藏筛选条 ── */
+.kbwork .kwfilt{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding-top:10px;padding-bottom:10px}
+.kbwork .kwin{flex:1 1 200px;min-width:0;height:30px;padding:0 9px;
+  background:var(--bg-overlay);border:0;box-shadow:var(--elevation-stroke);
+  border-radius:var(--r-sm);color:var(--fg);font:inherit;font-size:var(--fs-xs)}
+.kbwork .kwin::placeholder{color:var(--label-dimmed)}
+.kbwork .kwin:focus{outline:2px solid var(--accent);outline-offset:1px}
+.kbwork .kwsel{height:30px;padding:0 6px;max-width:100%;
+  background:var(--bg-overlay);border:0;box-shadow:var(--elevation-stroke);
+  border-radius:var(--r-sm);color:var(--fg-2);font:inherit;font-size:var(--fs-xs);
+  cursor:pointer}
+.kbwork .kwsel:focus{outline:2px solid var(--accent);outline-offset:1px}
+
+/* ── 馆藏表 ── */
+/* ★ table-layout:fixed + 百分比 colgroup 是这里唯一稳的写法：
+   auto 布局会让标题的 min-content 把表格顶出容器（旧列表踩过一次，
+   右半边被 .card 的 overflow 裁掉）。列宽在 HTML 的 colgroup 里给。 */
+.kbwork .kwtable{width:100%;max-width:100%;border-collapse:collapse;
+  table-layout:fixed;box-sizing:border-box;min-width:0}
+.kbwork .kwtable thead th{text-align:left;font-weight:500;
+  font-size:var(--fs-xxxs);color:var(--fg-3);letter-spacing:.02em;
+  padding:8px 8px 6px;white-space:nowrap;
+  border-bottom:var(--hair) solid var(--line-2)}
+.kbwork .kwtable td{min-width:0;overflow:hidden;padding:7px 8px;
+  font-size:var(--fs-xs);line-height:1.45;color:var(--fg-2);
+  border-bottom:var(--hair) solid var(--line-2);vertical-align:middle}
+.kbwork .kwtable tbody tr:last-child td{border-bottom:none}
+.kbwork .kwrow{cursor:pointer}
+.kbwork .kwrow:hover{background:var(--hover)}
+.kbwork .kwrow:focus-within{background:var(--hover)}
+.kbwork .kwc-year{white-space:nowrap;color:var(--fg-3);
+  font-variant-numeric:tabular-nums}
+.kbwork .kwc-journal{color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.kbwork .kwc-kind{white-space:nowrap}
+/* 题名是这一行唯一的可点目标：<button> 而不是 span —— 键盘 / 读屏都能用，
+   且不必在 <tr> 上编造 role="button"（行里已经有真按钮，重复的 role 更糟）。 */
+.kbwork .kwlink{display:block;width:100%;min-width:0;padding:0;border:0;
+  background:transparent;color:var(--fg);font:inherit;font-weight:500;
+  text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.kbwork .kwlink:hover{text-decoration:underline}
+.kbwork .kwlink:focus-visible{outline:2px solid var(--accent);outline-offset:2px;
+  border-radius:var(--r-xs)}
+.kbwork .kwsrc{display:inline-block;padding:1px 7px;border-radius:var(--r-pill);
+  font-size:var(--fs-xxxs);line-height:1.7;white-space:nowrap;
+  border:var(--hair) solid var(--line-2);color:var(--fg-3)}
+.kbwork .kwsrc[data-s='pdf']{border-color:var(--accent);color:var(--accent-strong)}
+.kbwork .kwsrc[data-s='text']{border-color:var(--fg-3);color:var(--fg-2)}
+.kbwork .kwsrc[data-s='meta']{border-style:dashed;color:var(--fg-cap)}
+
+/* ── 翻页 ── */
+.kbwork .kwpg{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 0 2px;border-top:var(--hair) solid var(--line-2);margin-top:2px}
+.kbwork .kwpg-n{font-size:var(--fs-xxs);color:var(--fg-3);
+  font-variant-numeric:tabular-nums}
+.kbwork .kwpg-b{display:inline-flex;align-items:center;gap:6px;margin-left:auto}
+.kbwork .kwpg-b .mini[disabled]{opacity:.45;cursor:not-allowed}
+.kbwork .kwnote{flex:1 1 100%;font-size:var(--fs-xxxs);color:var(--fg-cap);
+  line-height:var(--lh-xxxs);overflow-wrap:anywhere}
+
+/* ── 失败 / 空 / 提示三者必须长得不一样 ── */
+.kbwork .kwfail{border-color:var(--line-3)}
+.kbwork .kwfail .kwerr{font-family:var(--mono);font-size:var(--fs-code);
+  line-height:var(--lh-code);color:var(--fg-2);overflow-wrap:anywhere;
+  margin-top:6px}
+.kbwork .kwfix{margin-top:8px;padding-top:8px;font-size:var(--fs-xxs);
+  color:var(--fg-3);line-height:var(--lh-xxs);
+  border-top:var(--hair) solid var(--line-2)}
+.kbwork .kwretry{margin-top:8px}
+
+/* ── 详情 ── */
+.kbwork .kwdet{margin:2px 0 12px;padding:12px;border-radius:var(--r-md);
+  background:var(--bg-platform);border:var(--hair) solid var(--line-2);
+  min-width:0}
+.kbwork .kwdet[hidden]{display:none}
+.kbwork .kwdhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  min-width:0}
+.kbwork .kwdhead > b{font-size:var(--fs-s);font-weight:600;color:var(--fg);
+  min-width:0;overflow-wrap:anywhere}
+.kbwork .kwdid{font-family:var(--mono);font-size:var(--fs-xxxs);
+  color:var(--fg-cap);white-space:nowrap}
+.kbwork .kwdbtn{margin-left:auto;display:inline-flex;gap:6px;flex-wrap:wrap}
+
+.kbwork .kwdkind{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  margin-top:8px;font-size:var(--fs-xxs);color:var(--fg-3)}
+.kbwork .kwdkind b{flex:none;font-weight:600;color:var(--fg-2)}
+.kbwork .kwdkind[data-k='pdf'] b{color:var(--accent-strong)}
+.kbwork .kwraw{font-size:var(--fs-xxxs);color:var(--fg-cap)}
+
+.kbwork .kwmeta{display:grid;grid-template-columns:auto minmax(0,1fr);
+  gap:3px 10px;margin:10px 0 0;padding:10px 0 0;
+  border-top:var(--hair) solid var(--line-2);font-size:var(--fs-xxs)}
+.kbwork .kwmeta-row{display:contents}
+.kbwork .kwmeta dt{color:var(--fg-cap);white-space:nowrap}
+.kbwork .kwmeta dd{margin:0;color:var(--fg-2);min-width:0;
+  overflow-wrap:anywhere}
+.kbwork .kwmeta dd.kwmono{font-family:var(--mono);font-size:var(--fs-code);
+  color:var(--fg-3)}
+.kbwork .kwabs{margin-top:10px;font-size:var(--fs-xxs);color:var(--fg-2)}
+.kbwork .kwabs > summary{cursor:pointer;color:var(--fg-3);width:max-content}
+.kbwork .kwabs > summary:hover{text-decoration:underline}
+.kbwork .kwabs p{margin:6px 0 0;line-height:1.7;overflow-wrap:anywhere}
+
+/* ── 正文（按页） ── */
+.kbwork .kwtext{margin-top:10px;padding-top:10px;
+  border-top:var(--hair) solid var(--line-2);min-width:0}
+.kbwork .kwtext-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  font-size:var(--fs-xxs);color:var(--fg-3);font-variant-numeric:tabular-nums}
+.kbwork .kwtext-bar .kwpg-b{margin-left:auto}
+.kbwork .kwpre{margin:8px 0 0;padding:10px 12px;max-height:420px;overflow:auto;
+  background:var(--bg-overlay);border-radius:var(--r-sm);
+  box-shadow:var(--elevation-stroke);color:var(--fg);
+  font-family:var(--font-serif);font-size:var(--fs-xs);
+  line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere;
+  -webkit-overflow-scrolling:touch}
+.kbwork .kwmore{margin-top:8px}
+
+/* ── 窄屏（375）：表格改行块，绝不出横向滚动 ── */
+@media (max-width:620px){
+  .kbwork .kwtab{padding:5px 9px;font-size:var(--fs-xxs)}
+  .kbwork .kwhint{flex:1 1 100%;margin-left:0}
+  .kbwork .kwfilt .kwin{flex:1 1 100%}
+  .kbwork .kwsel{flex:1 1 calc(50% - 4px)}
+
+  /* 表格 → 单列卡片行。display:block 后 colgroup 自动失效，
+     不需要再跟列宽较劲，也就不会有"宽度算对了但内容顶出容器"那一类问题。 */
+  .kbwork .kwtable,
+  .kbwork .kwtable tbody,
+  .kbwork .kwtable tr,
+  .kbwork .kwtable td{display:block;width:auto}
+  .kbwork .kwtable thead{display:none}
+  .kbwork .kwtable colgroup{display:none}
+  .kbwork .kwrow{padding:9px 0;border-bottom:var(--hair) solid var(--line-2)}
+  .kbwork .kwtable td{border:0;padding:0}
+  .kbwork .kwlink{white-space:normal;overflow:visible;text-overflow:clip;
+    font-size:var(--fs-s);line-height:var(--lh-s);overflow-wrap:anywhere}
+  .kbwork .kwc-year{display:inline-block;margin-right:6px;
+    font-size:var(--fs-xxxs)}
+  .kbwork .kwc-journal{margin-top:2px;font-size:var(--fs-xxxs);white-space:normal}
+  .kbwork .kwc-kind{margin-top:4px}
+
+  .kbwork .kwdet{padding:10px}
+  .kbwork .kwdbtn{margin-left:0;width:100%}
+  .kbwork .kwpre{max-height:none;font-size:var(--fs-xxs);line-height:1.8;
+    padding:9px 10px}
+  .kbwork .kwpg-b{margin-left:0;width:100%}
+}
+
+/* 触屏没有 hover：胶囊/按钮的"悬停才出现"一律不成立，这里本来就不靠它。 */
+@media (hover:none){
+  .kbwork .kwlink:hover{text-decoration:none}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .kbwork .kwtab{transition:none}
+}
+
+/* 2026-10-30 · 文献库工作区里的表格卡片已经在外层 `.kbwork` 破格一次；
+   候选卡片又吃了一条 `.card:has(table.grid)` ⇒ 二次负边距，卡片被拉到
+   1375px（面板只有 1098px），左侧压到导航、右侧出视口。这里把嵌套卡片
+   归零；顶层 `.kbwork` 本身的通栏不受影响。 */
+.kbwork .card:has(table.grid){
+  width:auto;
+  margin-left:0;
+  margin-right:0;
+}

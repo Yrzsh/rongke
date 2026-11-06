@@ -1,0 +1,59 @@
+{
+  "_note": "Fig. 1（fig_conversion）的五点图面契约 —— 冻结评审对象。改图之前先改这里，别倒过来。多出来的 source/pdf/layout_manifest/legend_path 是文件路径提示，会被 --figure 取用，不参与契约校验。",
+
+  "figure_id": "Fig. 1",
+  "title": "Residence time drives an accelerating conversion gain across independent batches",
+  "core_conclusion": "Increasing residence time raises conversion monotonically, the gain per hour itself grows with time, and this pattern reproduces across three independent batches rather than being carried by a single batch.",
+
+  "archetype": "quantitative grid",
+  "backend": "python",
+  "width_mm": 183.0,
+  "height_mm": 52.0,
+  "journal": "nature",
+  "formats": ["svg", "pdf", "tiff", "png"],
+
+  "panels": [
+    {
+      "letter": "a",
+      "role": "trend + uncertainty — first-order main effect: conversion does rise with residence time",
+      "claim": "Batch conversion trajectories against residence time, with the pooled mean ± s.d. overlaid",
+      "center": "mean",
+      "spread": "s.d.",
+      "unit": "batches"
+    },
+    {
+      "letter": "b",
+      "role": "paired within-batch increment — rules out the claim being carried by a single batch",
+      "claim": "Per-hour increment for each batch, plotted at the interval midpoint",
+      "center": "raw values (no aggregation)",
+      "spread": "none — individual measurements are shown",
+      "unit": "batches"
+    },
+    {
+      "letter": "c",
+      "role": "distribution contrast — second-order claim: the per-hour gain itself grows, and that is not noise",
+      "claim": "Distribution of the per-hour increment for the 0–2 h and 3–5 h intervals",
+      "center": "mean",
+      "spread": "s.d.",
+      "unit": "intervals"
+    }
+  ],
+
+  "engine_artifacts": {
+    "fig_conversion.svg": "python",
+    "fig_conversion.pdf": "python",
+    "fig_conversion.tiff": "python",
+    "fig_conversion.png": "python"
+  },
+
+  "exclusions": [],
+
+  "canonical_names": [],
+
+  "_exclusions_note": "无排除。全量使用，无任何子集筛选。",
+
+  "source": "plot_conversion.py",
+  "pdf": "fig_conversion.pdf",
+  "layout_manifest": "fig_conversion.layout.json",
+  "legend_path": "fig_conversion.legend.md"
+}

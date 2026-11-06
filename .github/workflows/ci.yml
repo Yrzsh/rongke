@@ -1,0 +1,163 @@
+name: CI
+
+# 荣珂的 CI 只做三件能在裸环境里做成的事：
+#   1. 打包元数据自洽（版本号单一真源、依赖声明、打包清单）
+#   2. 真的装上 wheel，从仓库外 import 得动、index.html 到位、数据根不落进
+#      site-packages —— 这是「别人能不能用」的唯一判据
+#   3. 跑不需要模型/不需要网络的单元与路径测试
+#
+# ★ 刻意不做的事：不跑 regress.py 全量。那套要真实模型与真实绘图子进程，
+#   在 CI 上会一片红而红的原因是环境不是代码。本仓的验收口径是「本机全量
+#   regress 绿」，CI 只守打包与路径这两层能在任何机器上复现的不变量。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Windows runner 的控制台默认是 cp1252，而所有测试都打印中文 ——
+# 不强制 UTF-8，第一步就会 UnicodeEncodeError（红的原因是终端编码，不是代码）。
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  packaging:
+    name: 打包与安装（py${{ matrix.python-version }} / ${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Python 3.10 的 TOML 回退
+        if: matrix.python-version == '3.10'
+        run: python -m pip install tomli
+
+      - name: 打包元数据自洽
+        run: python packaging_test.py
+
+      - name: 数据根与代码根分离
+        run: python pathing_test.py
+
+      - name: 构建 wheel
+        run: python -m pip wheel --no-deps -w dist .
+
+      - name: 装进干净环境并验证
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 统一建在 $RUNNER_TEMP：Windows 的 Git Bash 里 /tmp 与
+          # $RUNNER_TEMP 不是同一处，原来先建 /tmp 再找 $RUNNER_TEMP 会 127。
+          python -m venv "$RUNNER_TEMP/rkci"
+          if [ -f "$RUNNER_TEMP/rkci/bin/python" ]; then
+            VPY="$RUNNER_TEMP/rkci/bin/python"
+          else
+            VPY="$RUNNER_TEMP/rkci/Scripts/python.exe"
+          fi
+          "$VPY" -m pip install --no-deps -q dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$VPY" - <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          import rongke
+          assert "site-packages" in rongke.__file__, rongke.__file__
+          from rongke.config import data_root
+          d = str(data_root())
+          assert "site-packages" not in d.lower(), f"数据根落进包目录: {d}"
+          import rongke.web as w
+          web = Path(w.__file__).parent
+          idx = web / "index.html"
+          assert idx.is_file(), f"index.html 缺失: {idx}"
+          # 2026-10-29 拆分成 index.html + 11 个静态资产：
+          # 判据从"HTML 大于 400KB"换成"引用的每个 /static/ 资产都在包里且非空"。
+          body = idx.read_text(encoding="utf-8")
+          assert len(body) > 20_000, len(body)
+          refs = sorted(set(re.findall(r"/static/[A-Za-z0-9_.-]+", body)))
+          assert len(refs) == 11, refs
+          for rel in refs:
+              p = web / rel.lstrip("/")
+              assert p.is_file() and p.stat().st_size > 0, p
+          assert (web / "app.ico").is_file(), "app.ico 缺失"
+          from rongke.config import Config
+          Config.load()
+          print("OK 安装验证通过：", rongke.__version__, "| data_root =", d,
+                "| static assets =", len(refs))
+          PY
+
+      - name: 命令入口可用
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/rkci/bin/rongke" ]; then RK="$RUNNER_TEMP/rkci/bin/rongke"
+          else RK="$RUNNER_TEMP/rkci/Scripts/rongke.exe"; fi
+          "$RK" --help > /dev/null
+          # `--version` 是发行件的基本礼貌。它会打印 argparse 的 version 串，
+          # 必须非零长度且含版本号 —— 只判"退出码 0"会让"打印空行"也过。
+          VER="$("$RK" --version)"
+          echo "version = $VER"
+          test -n "$VER"
+          echo "$VER" | grep -q "[0-9]\+\.[0-9]\+"
+          echo "OK rongke --help 与 --version 都可用"
+
+  offline-tests:
+    name: 离线测试（不需要模型与网络）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 只挑**不依赖模型、不依赖绘图子进程、不依赖本机路径**的套件。
+      # 每加一个进这里，都要先在本机确认它在裸环境里真的能过。
+      # eol_test 6.1 要求本仓 core.autocrlf=false（快照按字节算 md5）；
+      # CI checkout 默认没设，先按仓库要求设上，再验行尾。
+      - name: 行尾纪律的前提
+        run: git config --local core.autocrlf false
+
+      - name: eol（文件行尾纪律）
+        run: python eol_test.py
+
+      - name: fence（写入围栏）
+        run: python fence_test.py
+
+      - name: packaging
+        run: python packaging_test.py
+
+      - name: pathing
+        run: python pathing_test.py
+
+      - name: 版本号与 CHANGELOG 守卫
+        run: python changelog_test.py
+
+      # 账单：纯内存 + 临时目录，不联网、不调模型、不接支付。
+      # 这条在裸环境里能过，因为它连 matplotlib 都不 import。
+      - name: billing（本地账单）
+        run: python billing_test.py
+
+      # 登录门禁：服务端那层裸环境能过。浏览器那层会因为没装 playwright
+      # 打印 `[SKIP]` 而不是失败 —— CI 机器上不一定有浏览器，
+      # 那不该是红的理由。本机验收口径里那一层是真跑的。
+      - name: login（登录门禁）
+        run: python login_test.py
+
+      # 产品说明的数字与代码对账。**这条要装 MCP 服务端才能数到 59 个工具** ——
+      # 裸环境里没装，所以显式跳过（`--skip-counts`），只核价格/额度/链接/
+      # 与那几条"必须说清的诚实点"。
+      - name: product-doc（产品说明对账）
+        run: python product_doc_test.py --skip-counts
+
+      - name: analysis 的纯数据层（构造与建议，不出图）
+        run: python -c "import rongke.analysis as a; print('可 import,', len(a.CHART_KINDS), '种图型')"

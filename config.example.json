@@ -1,0 +1,60 @@
+{
+  "_note": "荣珂的可移植配置示例。复制成 config.json（项目根）或 ~/.rongke/config.json 后按需修改。密钥只从环境变量或 ~/.rongke/secrets.json 读，不要写在这里。这个文件刻意不含任何本机绝对路径。",
+  "mcp": {
+    "_note": "enabled=true 时才会去连 MCP 服务。import 指向别的客户端配置时请用你自己的路径；留空表示不导入。servers 里的命令/路径按你的机器填。",
+    "enabled": true,
+    "import": [],
+    "servers": {}
+  },
+  "deck": {
+    "_note": "组会 PPT 体检门。python 指向装了 python-pptx/Pillow/fontTools/lxml 的解释器；留空则自动探测。template 是你的品牌模板 .pptx 绝对路径，留空则只能用 compose_deck/style_deck 的近似路线。",
+    "enabled": true,
+    "python": "",
+    "skills_dir": "",
+    "template": "",
+    "template_name": "",
+    "timeout": 300,
+    "min_slides": 6,
+    "max_slides": 40,
+    "min_notes_ratio": 0.6,
+    "min_font_pt": 12.0,
+    "max_title_chars": 40,
+    "max_body_chars_per_slide": 600
+  },
+  "figure": {
+    "_note": "图面体检/绘图子进程用哪个解释器。需要 matplotlib + PyMuPDF；留空则自动探测。荣珂自己零第三方依赖。",
+    "enabled": true,
+    "python": "",
+    "skills_dir": "",
+    "timeout": 300
+  },
+  "kb": {
+    "_note": "PDF→Markdown 转换层。python 指向装了 PyMuPDF 的解释器；留空则自动探测。scihub_fallback 默认关闭（版权风险自担）。",
+    "enabled": true,
+    "python": "",
+    "use_ocr": false,
+    "images": false,
+    "obsidian_vault": "",
+    "md_dir": "knowledge",
+    "timeout": 600,
+    "scihub_fallback": false
+  },
+  "loop": {
+    "context_warn_chars": 0
+  },
+  "pricing": {
+    "_note": "每 100 万 token 的美元单价。留空是刻意的：不知道就显示 UNKNOWN，不显示 0。",
+    "models": {},
+    "default": null,
+    "cache_read_included_in_input": true
+  },
+  "provider": {
+    "_note": "OpenAI 兼容网关的默认形状。api_key_env 是环境变量名，不是密钥本身。",
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-4o-mini",
+    "reasoning_effort": "medium",
+    "max_tokens": 32768,
+    "stream_required": true
+  }
+}

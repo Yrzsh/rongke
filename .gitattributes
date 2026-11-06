@@ -1,0 +1,49 @@
+# ============================================================
+# 荣珂 · 换行策略（.gitattributes）
+#
+# 为什么需要它（2026-09-21 实测的血债）：Windows 上的**文本模式写入**
+#   会把 \n 翻译成 \r\n。实测：
+#       Path.write_text("x\ny\n")            ⇒ b'x\r\ny\r\n'   ✘
+#       Path.write_text(..., newline="\n")   ⇒ b'x\ny\n'        ✔
+#       Path.write_bytes(...)                ⇒ b'x\ny\n'        ✔
+#   本仓代码里 `write_text(...)` 有十几处，我用文本模式写文件也是同一个坑。
+#   后果不是"文件坏了"（Python 读源码/JSON 都不在乎行尾），而是
+#   **git diff 开始说谎**：一个 122 行的真改动被报成「443 增 / 321 删」，
+#   那 321 行"删除"全是行尾从 LF 变成 CRLF。一次真改动差点被噪声淹没。
+#
+# 策略：**默认一律 LF 入库、LF 出库**；只给三类东西开明确的口子（见下），
+#   每一处口子都写明理由。规则一经声明，行尾就不再随工具漂移。
+#
+# 纪律：规则**必须独立成行**。.gitattributes 与 .gitignore 都不支持行尾
+#   注释，写了注释整条规则会静默失效（本项目在 .gitignore 上真踩过）。
+#   改完必须复核生效：git check-attr text eol -- <路径>
+# ============================================================
+
+* text=auto eol=lf
+
+# ---- 例外一：第三方钉版本副本 ----
+# vendor/ppt-mcp 自带 SHA256SUMS，靠
+#   cd vendor/ppt-mcp && sha256sum -c SHA256SUMS（当前 21/21）
+# 逐文件校验字节。任何换行归一都会让那份清单当场失效 ⇒ 一个字节都不许动。
+# （实测 vendor 内本无 CRLF 文件，所以这条是**防御性**的：钉住意图，
+#   防止将来某次批量归一或编辑器保存动到它的字节。）
+vendor/** -text -eol
+
+# ---- 例外二：二进制产物 ----
+# text=auto 靠「前 8000 字节里有没有 NUL」来猜是不是文本。
+# PDF / PNG / TIFF 没必要赌这一步 ⇒ 显式钉住为二进制，永不转换。
+figures/*.pdf  -text -eol
+figures/*.png  -text -eol
+figures/*.tiff -text -eol
+
+# ---- 例外三：figures/ 下的**生成物**（数据、图、审计记录）----
+# 它们的换行由**生成器**决定，不是人手写的。其中 CSV 依 RFC 4180 显式写 CRLF
+# （figures/make_demo_data.py：open(..., newline="") + csv.writer），
+# SVG 与 JSON 由绘图/面板对齐模块产出，同样是 CRLF。
+#   ⇒ 显式声明为 CRLF，而不是去改五六个生成器的写入方式：
+#     ① 逼生成器改成 LF，每次重新出图都会再翻一次，等于把噪声留到下游；
+#     ② 声明之后现状是**声明过的**，不再随生成器漂移；
+#     ③ 仍是「文本」属性 ⇒ diff 照旧逐行可读，不会退化成"二进制文件不同"。
+figures/*.csv  text eol=crlf
+figures/*.json text eol=crlf
+figures/*.svg  text eol=crlf

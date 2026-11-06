@@ -1,0 +1,34 @@
+{
+  "id": "ext-answer-first",
+  "name": "外部能力 · 先答后问",
+  "description": "演示「吸收其他 agent 的长处」：一行外部能力 + 一行提示段点名，内核零改动。",
+  "order": 60,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "plugins": [
+    {
+      "op": "insert",
+      "id": "ext-answer-first",
+      "name": "@external/answer-first",
+      "config": {
+        "enabled": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "prompt",
+      "config": {
+        "sections": [
+          "identity",
+          "tools",
+          "runtime",
+          "safety",
+          "skills",
+          "external-answer-first"
+        ]
+      }
+    }
+  ]
+}

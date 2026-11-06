@@ -1,0 +1,120 @@
+荣珂桌面软件专有许可（仅适用于预编译安装包）
+================================================
+
+【范围】本文件**只**约束 `RongkeSetup-*.exe` 及其安装出来的
+`Rongke.exe` 二进制软件（含 30 天试用与激活码机制）。
+本仓库的 Python 框架源码、`rongke-*.whl`、`rongke-*.tar.gz`
+**不受本文件约束**，它们按仓库根目录 `LICENSE`（Apache-2.0）开源。
+
+【为什么分开】框架开源、成品软件专有是两条独立的授权。
+本文件不因为仓库里存在 Apache-2.0 的 `LICENSE` 而失效；
+`LICENSE` 也不因为本文件存在而被收回。分发二进制时必须同时附上本文件。
+
+────────────────────────────────────────────────────────────
+以下为原专有协议全文（未改动）：
+
+荣珂（Rongke）专有软件许可协议
+================================
+
+版权所有 (c) 2026 荣珂作者。保留所有权利。
+
+本软件及其源代码、文档、随附数据与任何衍生物（以下统称「本软件」）
+均为荣珂作者的专有财产，受著作权法及国际著作权条约保护。
+
+一、许可授予
+
+在遵守本协议全部条款的前提下，荣珂作者授予你一项有限的、非排他的、
+不可转让、不可再许可的许可，允许你：
+
+  1. 为**评估目的**在单台计算机上安装并运行本软件；
+  2. 在获得作者书面授权（含商业授权）后，按授权范围使用本软件
+     提供服务或用于生产经营。
+
+**未获书面授权时，前述第 1 项是唯一被授予的权利。**
+
+二、限制
+
+未经荣珂作者事先书面同意，你不得：
+
+  1. 复制、分发、出租、出借、出售、转售本软件或其任何部分；
+  2. 修改、翻译、演绎本软件，或基于本软件创作衍生作品；
+  3. 反向工程、反编译或反汇编本软件，法律法规强制允许的情形除外；
+  4. 移除、遮蔽或篡改本软件中的任何版权声明、商标或权利标识；
+  5. 将本软件或其任何部分作为另一产品的一部分再发布；
+  6. 将本软件用于提供与本软件功能实质相同的商业服务。
+
+三、第三方组件
+
+本软件在运行时**调用**但**不再分发**第三方组件。其中包括学术绘图
+生态（matplotlib、pandas 等）。这些组件由各自的许可证约束，与本协议
+无关；获取与遵守其许可证是你自己的责任。
+
+随本软件一并分发的第三方代码（若 `vendor/` 目录存在）保留其原始
+许可证，以该目录内的声明为准；本协议不改变你在此类代码上的既有权利。
+
+四、无担保
+
+本软件按「现状」提供，不附带任何明示或默示的担保，包括但不限于
+对适销性、特定用途适用性及不侵权的担保。使用本软件产出的任何
+研究内容、图件、文献引用与结论，其**学术与法律责任由使用者承担**。
+
+特别提示：本软件的文献检索与下载功能可能接入第三方数据源。使用这些
+功能时的合法性、版权合规与机构授权，须由使用者自行确认与承担，
+荣珂作者不为此提供任何担保或承诺。
+
+五、责任限制
+
+在适用法律允许的最大范围内，荣珂作者在任何情况下均不对因使用或
+无法使用本软件而产生的任何间接、附带、特殊、后果性或惩罚性损害
+承担责任，包括但不限于利润损失、数据丢失、业务中断或学术声誉损害。
+无论损害基于合同、侵权或其他理论，亦无论作者是否已被告知该等
+损害的可能性，本限制均适用。
+
+六、终止
+
+你违反本协议任一条款时，本许可自动终止且无需通知。终止后你必须
+立即停止使用并删除本软件的全部副本。本协议第一、二、四、五、七条
+在终止后继续有效。
+
+七、适用法律
+
+本协议适用中华人民共和国法律。因本协议产生的争议，双方应友好协商
+解决；协商不成的，提交荣珂作者所在地有管辖权的人民法院。
+
+八、联系
+
+商业授权、二次开发授权或其他协议外的使用，请与荣珂作者联系。
+
+──────────────────────────────────────────────
+Rongke Proprietary License — All Rights Reserved
+
+Copyright (c) 2026 The Rongke Authors. All rights reserved.
+
+This software, including its source code, documentation, and any
+derivatives, is the proprietary property of the Rongke Authors and is
+protected by copyright law and international treaties.
+
+You are granted a limited, non-exclusive, non-transferable,
+non-sublicensable license to install and run this software on a single
+computer SOLELY FOR EVALUATION PURPOSES. Any other use — including
+distribution, modification, derivative works, reverse engineering,
+resale, or use in a competing commercial service — requires the prior
+written consent of the Rongke Authors.
+
+Third-party components are invoked at runtime but not redistributed.
+They remain governed by their own licenses; complying with them is your
+responsibility.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED. The academic and legal responsibility for any research
+output, figure, citation, or conclusion produced with this software
+rests with the user. You are solely responsible for confirming the
+legality and copyright compliance of any third-party data source you
+connect this software to.
+
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
+SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES ARISING FROM THE USE OF OR
+INABILITY TO USE THIS SOFTWARE.
+
+This license terminates automatically upon any breach. Governed by the
+laws of the People's Republic of China.

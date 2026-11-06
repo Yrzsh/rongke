@@ -1,0 +1,63 @@
+{
+  "id": "lit-verify",
+  "name": "文献核验（检索 / 引用 / 查证 / 精读）",
+  "description": "引注与文献表条目都进门禁、追问先脱水、工具前缀按阶段刷新。",
+  "order": 31,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "stages": ["search", "verify"],
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "citation",
+      "config": {
+        "bracket_pairs": [
+          "[n]",
+          "〔n〕"
+        ],
+        "count_ref_table": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "chars",
+      "config": {
+        "display_unit": "chars_eq"
+      }
+    },
+    {
+      "op": "patch",
+      "id": "gate",
+      "config": {
+        "measured_metrics": [
+          "chars",
+          "chars_delta_pct",
+          "paragraphs",
+          "sentences",
+          "citations",
+          "has_refs",
+          "cite_numbers",
+          "cite_first_order",
+          "refs_n"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "context",
+      "config": {
+        "target_chars": 80000,
+        "compact_before_followup": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "mount",
+      "config": {
+        "refresh": "per_stage"
+      }
+    }
+  ]
+}

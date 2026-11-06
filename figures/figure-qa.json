@@ -1,0 +1,146 @@
+{
+  "ok": false,
+  "verdict": "FIX BEFORE DELIVERY",
+  "figure_id": "Fig. 1",
+  "backend": "python",
+  "route": {
+    "route": "submission",
+    "label": "投稿渲染路线（python / r）",
+    "must": true,
+    "declared_backend": "python",
+    "satisfied": true,
+    "reasons": [
+      "分面数 3 ≥ 2：对齐门需要后端自己量出的「分面几何清单」，只有 python/r 产得出。",
+      "分面 a、b、c 画的是数据：定量面板要源数据可追溯 + 字形 5 pt 下限 + 精确物理尺寸。",
+      "声明了目标期刊（nature）：要进投稿包，需要可编辑矢量 + 600 dpi 位图 + 源数据。"
+    ],
+    "backends": [
+      "python",
+      "r"
+    ],
+    "unavailable": [],
+    "note": "本图必须由 python/r 渲染到底（含预览与导出）。上游素材（AI 生成的示意图版、照片版）不算渲染引擎，由 python/r 组装进图里即可 —— 别把它们写进 engine_artifacts。"
+  },
+  "files": {
+    "source": "D:\\桌面\\荣珂\\figures\\figures\\plot_conversion.py",
+    "pdf": "D:\\桌面\\荣珂\\figures\\fig_conversion.pdf",
+    "layout_manifest": ""
+  },
+  "gates": {
+    "source": "NOT APPLICABLE",
+    "glyphs": "PASS",
+    "collision": "PASS",
+    "alignment": "NOT AUDITABLE"
+  },
+  "blockers": [
+    "【alignment 门：NOT AUDITABLE】这是 3 分面图，但没给分面几何清单。对齐门只能审「后端自己量出来的矩形」——选 python/r 后端会自动产出它；用第三方渲染器（如 Origin）出图时，要么补一份几何清单，要么改用 python/r 出这一张。",
+    "【图注不合格】\n  - LEGEND-MISSING：没提供图注文本，无法做图注体检。图注规范要求：`Fig. N | 加粗名词短语` + 分面 + 统计 + 源数据套语。"
+  ],
+  "warnings": [],
+  "report_path": "D:\\桌面\\荣珂\\figures\\figure-qa.json",
+  "audited_at": "2026-09-27 22:24:46",
+  "audited_at_epoch": 1790519086.5655248,
+  "artifact_mtimes": {
+    "D:\\桌面\\荣珂\\figures\\fig_conversion.pdf": 1789736195.4012935
+  },
+  "workdir": "D:\\桌面\\荣珂\\figures",
+  "contract": {
+    "figure_id": "Fig. 1",
+    "title": "Residence time drives an accelerating conversion gain across independent batches",
+    "core_conclusion": "Increasing residence time raises conversion monotonically, the gain per hour itself grows with time, and this pattern reproduces across three independent batches rather than being carried by a single batch.",
+    "panels": [
+      {
+        "letter": "a",
+        "role": "trend + uncertainty — first-order main effect: conversion does rise with residence time",
+        "claim": "Batch conversion trajectories against residence time, with the pooled mean ± s.d. overlaid",
+        "center": "mean",
+        "spread": "s.d.",
+        "unit": "batches"
+      },
+      {
+        "letter": "b",
+        "role": "paired within-batch increment — rules out the claim being carried by a single batch",
+        "claim": "Per-hour increment for each batch, plotted at the interval midpoint",
+        "center": "raw values (no aggregation)",
+        "spread": "none — individual measurements are shown",
+        "unit": "batches"
+      },
+      {
+        "letter": "c",
+        "role": "distribution contrast — second-order claim: the per-hour gain itself grows, and that is not noise",
+        "claim": "Distribution of the per-hour increment for the 0–2 h and 3–5 h intervals",
+        "center": "mean",
+        "spread": "s.d.",
+        "unit": "intervals"
+      }
+    ],
+    "archetype": "quantitative grid",
+    "backend": "python",
+    "width_mm": 183.0,
+    "height_mm": 52.0,
+    "journal": "nature",
+    "formats": [
+      "svg",
+      "pdf",
+      "tiff",
+      "png"
+    ],
+    "engine_artifacts": {
+      "fig_conversion.svg": "python",
+      "fig_conversion.pdf": "python",
+      "fig_conversion.tiff": "python",
+      "fig_conversion.png": "python"
+    },
+    "exclusions": [],
+    "canonical_names": [],
+    "closing": ""
+  },
+  "contract_problems": [],
+  "gate_details": [
+    {
+      "name": "source",
+      "verdict": "NOT APPLICABLE",
+      "detail": "没有绘图源码（plot_conversion.py 不存在）——第三方渲染器（如 Origin）出图时属正常。",
+      "report_path": "",
+      "findings": []
+    },
+    {
+      "name": "glyphs",
+      "verdict": "PASS",
+      "detail": "最小 5.6 pt，低于下限 0 处，文本段 39 个",
+      "report_path": "",
+      "findings": [
+        {
+          "level": "PASS",
+          "check_id": "GLYPH-FLOOR",
+          "message": "最小 5.6 pt ≥ 下限 5.0 pt",
+          "evidence": []
+        }
+      ]
+    },
+    {
+      "name": "collision",
+      "verdict": "PASS",
+      "detail": "0 fail / 0 warn / 6 处填充内嵌",
+      "report_path": "D:\\桌面\\荣珂\\figures\\fig_conversion.collision-audit.json",
+      "findings": []
+    },
+    {
+      "name": "alignment",
+      "verdict": "NOT AUDITABLE",
+      "detail": "这是 3 分面图，但没给分面几何清单。对齐门只能审「后端自己量出来的矩形」——选 python/r 后端会自动产出它；用第三方渲染器（如 Origin）出图时，要么补一份几何清单，要么改用 python/r 出这一张。",
+      "report_path": "",
+      "findings": []
+    }
+  ],
+  "freshness": [],
+  "legend_findings": [
+    {
+      "level": "FAIL",
+      "check_id": "LEGEND-MISSING",
+      "message": "没提供图注文本，无法做图注体检。图注规范要求：`Fig. N | 加粗名词短语` + 分面 + 统计 + 源数据套语。",
+      "evidence": []
+    }
+  ],
+  "notes": []
+}

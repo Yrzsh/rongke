@@ -1,0 +1,17 @@
+/* 稿件台：正文是主角，工具保持安静。 */
+.dhead{min-height:52px;align-items:center}
+#deskFocus{flex:none;color:var(--fg-3);font-size:11px}
+.desk[data-focus="1"]{position:fixed;z-index:94;top:var(--app-top);right:0;bottom:0;width:min(1100px,100vw)!important;box-shadow:var(--shadow-3)}
+.desk[data-focus="1"] .dinner{max-width:820px;margin:0 auto;width:100%}
+.desk[data-focus="1"] .dghost{display:none}
+.desk[data-focus="1"] .dbody{min-height:0}
+.dtext{font-size:calc(15px * var(--desk-scale,1));line-height:1.9}
+@media (max-width:880px){
+  .desk[data-focus="1"]{top:0;width:100vw!important}
+  .dhead{padding-left:10px;gap:5px;flex-wrap:wrap}
+  .dtitle{min-width:80px}
+  .dacts{max-width:100%;overflow-x:auto}
+  .dacts .mini{white-space:nowrap}
+  .dtext{padding:20px 16px 56px}
+}
+@media (prefers-reduced-motion:reduce){.desk{transition:none}}

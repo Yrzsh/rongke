@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ══════════════════════════════════════════════════════════════════════
+# 荣珂 —— 自研科研 agent 内核
+#
+# ★ 依赖为什么这么少：这套内核**故意不带任何第三方运行时依赖**。
+#   模型调用走标准库 urllib，Web 控制台是 http.server，
+#   前端是单文件 index.html（零 CDN、零 webfont、零构建）。
+#
+# ★ 那 matplotlib / pandas 去哪了：它们**不是**荣珂的依赖，是
+#   **绘图/审计子进程**的依赖。`rongke/figure.py` 里的 find_figure_python()
+#   会去找一个「装了 matplotlib + fitz」的 Python 解释器来跑绘图脚本与
+#   六道审计门，荣珂自己一个都不 import。所以它们属于 `[figure]` 这组
+#   **可选**依赖 —— 想把绘图能力装进同一个解释器的人可以选装。
+#
+#   对「生态成熟」这件事的直接含义：荣珂在任何裸 Python 3.10+ 上
+#   `pip install` 就能跑对话/写作/文献，配图是加分项而不是装不上的理由。
+# ══════════════════════════════════════════════════════════════════════
+
+[project]
+name = "rongke"
+dynamic = ["version"]
+description = "荣珂 —— Apache-2.0 开源科研 agent 框架：模型调用、主循环、完成证据门、能力预设都是本仓代码，零第三方硬依赖"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "荣珂" }]
+keywords = ["research", "agent", "llm", "academic-writing", "figures"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+]
+
+#: 核心运行时依赖：**空**。这是设计决定，不是遗漏（见文件头注释）。
+dependencies = []
+
+[project.optional-dependencies]
+#: 想把「数据分析成图」装进同一个解释器时选装。
+#: 不装也能用 —— find_figure_python() 会去别的解释器上找。
+figure = ["matplotlib>=3.7", "pandas>=2.0", "openpyxl>=3.1", "PyMuPDF>=1.23"]
+#: 读 PDF / 抽文本。
+pdf = ["PyMuPDF>=1.23"]
+#: Windows 下操作 Origin 等 COM 组件（非 Windows 自动跳过）。
+com = ["pywin32>=306; sys_platform == 'win32'"]
+#: 内嵌窗口（桌面版）：rongke.exe 自己当窗口宿主。不装也能跑，窗口退回 Edge --app。
+desktop = ["pywebview>=6"]
+#: 开发/测试。
+dev = ["pytest>=7", "tomli; python_version < '3.11'"]
+
+[project.scripts]
+#: `rongke` 命令 = CLI 入口。Web 控制台走 `rongke --web`。
+rongke = "rongke.cli:main"
+
+[project.urls]
+# 真实存在才写；`packaging_test.py` 仍守着"不许出现占位链接"。
+Repository = "https://github.com/Yrzsh/rongke"
+Issues = "https://github.com/Yrzsh/rongke/issues"
+Releases = "https://github.com/Yrzsh/rongke/releases"
+
+[tool.setuptools]
+#: 只打 rongke 这个包；仓库根下的 topics/ memory/ runs/ 是**用户数据**，不进包。
+packages = ["rongke", "rongke.web"]
+include-package-data = true
+#: setuptools 默认按 `LICEN[CS]E*` 通配扫许可证文件，会把
+#: `license_test.py` / `license_gate_test.py` 也当成 License-File 塞进 wheel。
+#: 显式收敛到两份**真许可**：框架 Apache-2.0 + 桌面软件专有声明。
+#: 双轨必须同时在发行件里可见 —— 只放 Apache 会让人误以为 exe 也开源。
+license-files = ["LICENSE", "LICENSE-DESKTOP.txt"]
+
+[tool.setuptools.dynamic]
+#: 版本单一真源：rongke/__init__.py 里的 __version__。
+#: loop.py 与 mcp_client.py 都从这里读，因此 pyproject 也必须读它，
+#: 不允许在第二个地方手写版本号（那样迟早漂移）。
+version = { attr = "rongke.__version__" }
+
+[tool.setuptools.package-data]
+#: Web 控制台为无构建静态模块，所有运行时资产必须随包发布。
+"rongke.web" = ["index.html", "app.ico", "static/*.css", "static/*.js", "static/*"]
+#: 随包预设（能力层栈的 JSON 定义，丢了就等于没有预设）。
+#: ★ caps_ext/*.py 也是**数据**：`caps.external_cap_dirs()` 按文件路径
+#:   spec_from_file_location 动态加载，caps_ext 没有 __init__.py、不是包，
+#:   不写进 package-data 就会在 wheel 里凭空消失 —— 安装版会少掉
+#:   `@external/lit-search` / `@external/answer-first`，而预设点名它们时
+#:   只报「解析不到」，很难查。2026-11-05 补。
+#: 自研最小技能（Apache-2.0，替代仓内第三方 NC 技能，随包分发）。
+#: `stages.SKILL_ROOTS` 会扫这个目录；不要给它加 `__init__.py`（按路径读）。
+"rongke" = ["presets/*.json", "presets/*.md", "caps_ext/*.py",
+            "skills/*/SKILL.md", "skills/*/*.md"]

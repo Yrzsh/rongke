@@ -1,0 +1,121 @@
+{
+  "id": "strict-v2",
+  "name": "严格判据 v2（A/B 对照夹具）",
+  "description": "把 9 条卡点一次性全打开；只作对照，不进胶囊映射。",
+  "order": 20,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "citation",
+      "config": {
+        "bracket_pairs": [
+          "[n]",
+          "〔n〕"
+        ],
+        "count_ref_table": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "chars",
+      "config": {
+        "display_unit": "chars_eq"
+      }
+    },
+    {
+      "op": "patch",
+      "id": "gate",
+      "config": {
+        "measured_metrics": [
+          "chars",
+          "chars_delta_pct",
+          "paragraphs",
+          "sentences",
+          "citations",
+          "has_refs",
+          "cliche_hits",
+          "cite_numbers",
+          "cite_first_order",
+          "refs_n",
+          "absolutes",
+          "placeholders",
+          "defensive_hits",
+          "tail_repeat"
+        ],
+        "evidence_fallback": false,
+        "min_score": 80
+      }
+    },
+    {
+      "op": "patch",
+      "id": "followup",
+      "config": {
+        "merge_new_constraints": true,
+        "redraft_target": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "mount",
+      "config": {
+        "refresh": "per_stage",
+        "initial_domains": [
+          "core",
+          "kb",
+          "research"
+        ],
+        "schema_chars_budget": 18000
+      }
+    },
+    {
+      "op": "patch",
+      "id": "context",
+      "config": {
+        "target_chars": 60000,
+        "compact_before_followup": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "writing-metrics",
+      "config": {
+        "expose": true,
+        "metrics": [
+          "chars",
+          "chars_eq",
+          "chars_excl_refs",
+          "citations",
+          "cliche_hits"
+        ]
+      }
+    },
+    {
+      "op": "replace",
+      "override": true,
+      "id": "prompt",
+      "name": "@rongke/prompt-sections",
+      "config": {
+        "complete": true,
+        "sections": [
+          "identity",
+          "tool-policy"
+        ],
+        "keep_sections": [
+          "writing"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "stage",
+      "config": {
+        "hard": true,
+        "dedupe_warnings": true
+      }
+    }
+  ]
+}

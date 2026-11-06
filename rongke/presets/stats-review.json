@@ -1,0 +1,53 @@
+{
+  "id": "stats-review",
+  "name": "统计审查",
+  "description": "绝对化表述 / 占位符 / 防御性写作 / 结尾复述进门禁，阶段技能改硬门、告警去重。",
+  "order": 32,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "stages": ["stats", "units"],
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "gate",
+      "config": {
+        "measured_metrics": [
+          "chars",
+          "chars_delta_pct",
+          "paragraphs",
+          "sentences",
+          "citations",
+          "has_refs",
+          "absolutes",
+          "placeholders",
+          "defensive_hits",
+          "tail_repeat"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "stage",
+      "config": {
+        "hard": true,
+        "dedupe_warnings": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "prompt",
+      "config": {
+        "sections": [
+          "identity",
+          "tools",
+          "runtime",
+          "safety",
+          "skills",
+          "stats-checklist"
+        ]
+      }
+    }
+  ]
+}

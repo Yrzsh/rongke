@@ -1,0 +1,44 @@
+{
+  "id": "lit-search",
+  "name": "文献检索（插件化：检索链 / 纪律 / 工具面）",
+  "description": "把检索文献本身做成可挂载的一行能力：检索纪律进 system、检索工具链在预算裁剪中被保住、检索后须有文献表条目。删掉 caps_ext/lit_search.py 即整条退回原样。",
+  "order": 32,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "stages": ["search", "verify"],
+  "plugins": [
+    {
+      "op": "insert",
+      "id": "lit-search",
+      "name": "@external/lit-search",
+      "config": {
+        "enabled": true,
+        "sources": ["OpenAlex", "arXiv", "Crossref", "PubMed"],
+        "require_citations": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "prompt",
+      "config": {
+        "sections": [
+          "identity",
+          "tools",
+          "runtime",
+          "safety",
+          "skills",
+          "external-lit-search"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "mount",
+      "config": {
+        "schema_chars_budget": 24000
+      }
+    }
+  ]
+}

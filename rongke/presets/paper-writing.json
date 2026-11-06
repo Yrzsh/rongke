@@ -1,0 +1,83 @@
+{
+  "id": "paper-writing",
+  "name": "论文写作（起草 / 润色）",
+  "description": "〔n〕引注、字数量纲一致、14 项门禁、禁抄原文放行、追问合并新约束、暴露量字数工具。",
+  "order": 30,
+  "scenes": [
+    "writing"
+  ],
+  "base": "baseline",
+  "stages": ["draft", "polish"],
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "citation",
+      "config": {
+        "bracket_pairs": [
+          "[n]",
+          "〔n〕"
+        ],
+        "count_ref_table": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "chars",
+      "config": {
+        "display_unit": "chars_eq"
+      }
+    },
+    {
+      "op": "patch",
+      "id": "gate",
+      "config": {
+        "measured_metrics": [
+          "chars",
+          "chars_delta_pct",
+          "paragraphs",
+          "sentences",
+          "citations",
+          "has_refs",
+          "cliche_hits",
+          "cite_numbers",
+          "cite_first_order",
+          "refs_n",
+          "absolutes",
+          "placeholders",
+          "defensive_hits",
+          "tail_repeat"
+        ],
+        "evidence_fallback": false,
+        "min_score": 80
+      }
+    },
+    {
+      "op": "patch",
+      "id": "followup",
+      "config": {
+        "merge_new_constraints": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "writing-metrics",
+      "config": {
+        "expose": true,
+        "metrics": [
+          "chars",
+          "chars_eq",
+          "chars_excl_refs",
+          "citations",
+          "cliche_hits"
+        ]
+      }
+    },
+    {
+      "op": "patch",
+      "id": "context",
+      "config": {
+        "compact_before_followup": true
+      }
+    }
+  ]
+}

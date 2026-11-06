@@ -1,0 +1,37 @@
+{
+  "id": "deck",
+  "name": "组会汇报 PPT",
+  "description": "deck 最小页数由 config 段声明；阶段技能改硬门。",
+  "order": 34,
+  "scenes": [
+    "deck"
+  ],
+  "base": "baseline",
+  "stages": ["slides"],
+  "config": {
+    "deck": {
+      "min_slides": 6
+    }
+  },
+  "plugins": [
+    {
+      "op": "patch",
+      "id": "stage",
+      "config": {
+        "hard": true
+      }
+    },
+    {
+      "op": "patch",
+      "id": "mount",
+      "config": {
+        "initial_domains": [
+          "core",
+          "research",
+          "figure",
+          "ppt"
+        ]
+      }
+    }
+  ]
+}

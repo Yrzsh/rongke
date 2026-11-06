@@ -1,0 +1,320 @@
+/* ═══════════════════════════════════════════════════════════════════
+   设计令牌 —— 取自 DSH Design System 的**真实取值**（不是近似）：
+   dsh-client-ui-theme/lib/client.js 中 --dsw-static-neutral-bluish-* 与
+   --dsw-alias-* 的明色档。留了原令牌名做对照，方便日后同步。
+
+   三层语义色（暗色模式的必需品）：
+     --ink / --on-ink   强调面与其上的文字。原来是硬编码 --b-1000 + #fff，
+                        一进暗色，"黑底白字的按钮"就变成"深底深字"直接消失。
+     --ok-bg/--err-bg/--warn-bg/--biz-bg  语义底色。原来散落写死的
+                        #fee2e2 / #fef5e7 / #e6faed 在暗色下会亮得刺眼。
+   把所有硬编码语义色收进变量，暗色就只需覆盖一层，不必逐个组件改。
+
+   ★ v3 的分层约定（本轮 UX 重构的核心）：
+     界面默认只回答三件事 ——「推进到哪了 / 产出在哪 / 要你定夺什么」。
+     所有系统内部概念（门判定、装配、引用序号、埋点、tokens）一律降级到
+     `.tech` / `.proc` 两个可折叠容器里。**判定的逻辑一行没动，动的是它出现的位置。**
+   ═══════════════════════════════════════════════════════════════════ */
+:root{
+  /* 明色档 —— ZCode（zai-org/ZCode · Apache-2.0）Zai Light **真值**。
+     参考件：D:\tmp\zcode-ref\styles.css（仓库 packages/ui/src/styles.css 的 .theme-zai-light）。
+     结构照旧：原始色阶在上、语义映射在下 —— 暗色档只覆盖这两层，组件规则零改动。 */
+  --b-00:#ffffff; --b-50:#f5f5f5; --b-60:#f0f0f0; --b-75:#f0f0f0;
+  --b-100:#e5e5e5; --b-150:#e5e5e5; --b-200:#d4d4d4; --b-300:#bdbdbd;
+  --b-400:#a3a3a3; --b-500:#8a8a8a; --b-600:#6b6b6b; --b-700:#525252;
+  --b-1000:#0d0d0d;
+  /* 蓝 = ZCode 的 icon-blue / terminal-blue（#0b7fff）：链接与图标强调用它，
+     **不做大面积品牌铺色**（DESIGN.md 的 Color Usage Rules 原话）。 */
+  --dk-400:#0b7fff; --dk-450:#0066dd; --dk-50:#ebf4ff; --dk-100:#dceaff;
+  --red-500:#ff5c5c; --red-600:#e03131;
+  --green-500:#1e8a3e; --green-100:#eaf7ee;
+  --amber-500:#e07b00;
+
+  /* 语义映射（--dsw-alias-*）—— 值来自 .theme-zai-light：
+     background #f8f8f8 / sidebar #f0f0f0 / card·input #ffffff / border rgba(13,13,13,.1) */
+  --bg:#f8f8f8;
+  --bg-platform:#f0f0f0;
+  --bg-code:#f5f5f5;
+  --bg-overlay:#ffffff;
+  --line-1:rgba(13,13,13,.06);
+  --line-2:rgba(13,13,13,.10);
+  --line-3:rgba(13,13,13,.15);
+  --line-4:rgba(13,13,13,.20);
+  /* 文字三档：ZCode 的 foreground(=neutral-800)/subtle(60%)/subtlest(40%) 同一公式 */
+  --fg:#262626;
+  /* ★ 2026-10-22 灰阶重排：原 .66/.48/.42 在 #f8f8f8 上分别是 7.1/2.89/2.47:1 ——
+     --fg-3 与 --fg-cap 双双低于 WCAG AA 的 4.5:1，而全站 271~433 处文字用它俩
+     （.hint / .subcap / .kbid / .fs / .kbtodo 全挂在这两个令牌上）。
+     深色主题一直是 .82/.68/.48 ⇒ 实测 11.9/6.7/4.77:1，本来就没问题；
+     所以这不是"把颜色调深"，是**浅色这一支单独算错了**。
+     下面每一档都按最坏的底（`.kbn`/`.fs` 落在 `--hover` #ececec 上，不是 #f8f8f8）
+     反算过，写成注释当判据：
+       .78 → 7.13:1(f8) / 6.61:1(hover) · .68 → 5.17:1 / 4.93:1 · .64 → 4.53 / 4.36(✗)
+     ⇒ .64 在 hover 底上只有 4.36，差 0.14；所以 cap 取 .68，不留"刚好卡线"的档。 */
+  --fg-2:rgba(38,38,38,.78);
+  --fg-3:rgba(38,38,38,.68);
+  --fg-cap:rgba(38,38,38,.68);
+  --biz:var(--dk-400);
+  --ok:var(--green-500);
+  --err:var(--red-600);
+  --warn:var(--amber-500);
+  --hover:rgba(13,13,13,.05);
+  --active:rgba(13,13,13,.08);
+  --hover-acc:rgba(13,13,13,.12);
+
+  /* 强调面：ZCode 的主按钮就是**黑底白字**（--color-primary #000 / 反白 #fff），
+     品牌色只留给链接与图标 —— 这是它看起来"冷静、密、操作感"的第一要素。 */
+  --ink:var(--b-1000); --on-ink:#ffffff;
+  /* 语义底：success/destructive 色取 .theme-zai-light 真值；浅底用同族 8–12% 叠色 */
+  --ok-bg:var(--green-100); --ok-fg:#166b32;
+  --err-bg:rgba(224,49,49,.10); --err-fg:#a61e1e;
+  --warn-bg:rgba(224,123,0,.12); --warn-fg:#8a4400;
+  --biz-bg:var(--dk-50);    --biz-fg:#0057bf;
+  /* ★ 2026-10-22 这两个 *-fg 各压深一档，理由都是**像素实测**，不是估的：
+     · --warn-fg 原 #9a4d00 落在自己 12% 的琥珀底上（rgb(245,233,218)）只有 5.11:1
+       —— 那个是过得了的；真正过不了的是 .lint .iss.soft .t，它把 --warn 本身
+       （rgb(224,123,0)，**填充色**）当字色放在 #f8f8f8 上，像素实测 2.82:1。
+       所以除了改这里，1246 行那处也一并换成 --warn-fg。
+     · --biz-fg 原 #0066dd 落在自己 10% 的蓝底上（rgb(224,236,249)），
+       像素实测 4.45:1 —— 差 0.05，最容易被当成"差不多就行"放过。
+       #0057bf 在上同底 5.98:1。 */
+  /* 思维链底部渐隐 —— 渐隐的起点色必须跟着主背景走（现在主背景是 #f8f8f8） */
+  --think-fade:linear-gradient(180deg,#f8f8f8 20.19%,rgba(248,248,248,0) 100%);
+  --sweep:rgba(248,248,248,.78);
+
+  --shadow-1:0 2px 4px 0 rgba(0,0,0,.05);
+  --shadow-2:0 4px 12px 0 rgba(0,0,0,.02),0 2px 8px 0 rgba(0,0,0,.04);
+  --shadow-3:0 0 1px 0 rgba(0,0,0,.2),0 0 4px 0 rgba(0,0,0,.02),0 12px 32px 0 rgba(0,0,0,.08);
+
+  /* DSH 立面：stroke 是"画出来的边"，不占布局。
+     ★ 承重规矩（DSH ui-theme/README.md 原文）：抬高面设 border:0，
+       不带占布局的描边 —— 描边由 .5px 的 stroke 阴影画。这就是它"薄"的原因。
+     --shadow-1/2/3 上面那三条**保留不删**：它们仍在下游被引用。 */
+  --elevation-stroke-color:rgba(0,0,0,.16);   /* 亮：--dsw-alias-border-l4 = #00000029 就近取 */
+  --elevation-stroke:0 0 0 .5px var(--elevation-stroke-color);
+  --elevation-soft:var(--elevation-stroke),0 4px 16px 0 rgba(0,0,0,.03),0 0 24px 0 rgba(0,0,0,.02);
+  --elevation-panel:var(--elevation-stroke),0 3px 8px 0 rgba(0,0,0,.03),0 0 16px 0 rgba(0,0,0,.02);
+  --elevation-prominent:var(--elevation-stroke),0 3px 8px 0 rgba(0,0,0,.04),0 0 20px 0 rgba(0,0,0,.02);
+
+  /* ── 形状层（DSH 的真实阶，不是近似）──────────────────────────
+     dsh 的"好看"不在配色 —— 配色早就搬过来了 —— 在这三件事上：
+     · `corner-shape: superellipse(1.5)`：圆角是**方圆形**（squircle），
+       不是 CSS 默认的圆弧。这是它对 `*` 全局设的一条，视觉上最直接。
+     · 半径只有六档：4 / 8 / 12 / 16 / 20 / 28（panel）。原来这里的
+       `--r-sm:6px` 与散落各处的 3/5/6/9px 都是**阶外的野值**，
+       一屏里同时出现四种接近但不相同的圆角 —— 那就是"说不上来哪里脏"的主因。
+     · 分隔线是 **.5px 发丝**（`border-bottom:.5px solid …`），不是一像素。
+     ★ corner-shape 需要 Chromium ≥132；@supports 包着，老浏览器退回圆弧，
+       不影响任何布局 —— 这条改动最坏的结果是"圆角没那么方"，不是坏版。 */
+  --corner:superellipse(1.5);
+  --r-xs:4px; --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:20px;
+  --r-panel:28px; --r-pill:999px;
+  --hair:.5px;
+  /* 交付正文折叠态露出多高。400px ≈ 14 行正文 + 两个小标题，
+     够看出"这是什么稿、开头怎么写的"，又不至于把产出物和下一步顶到屏外。
+     实测：这一篇 1876 字排 2022px，折叠后整页从 3904px 降到约 2300px。 */
+  --manu-fold:400px;
+
+  /* ── 排版层（DSH 的角色阶梯：每一档都**配一个行高**，没有半像素野值）
+     原来散着 10.5 / 11.5 / 12.5 / 17px 四档阶外字号，还有 62 个元素的行高是
+     `normal`（等于由字体自己决定）—— 同一屏里两套基线在打架，这就是"挤"的来源。 */
+  --fs-xxxs:11px; --lh-xxxs:14px;   /* --dsw-font-xxxs-11 */
+  --fs-xxs:12px;  --lh-xxs:18px;    /* --dsw-font-xxs-12 */
+  --fs-xs:13px;   --lh-xs:20px;     /* --dsw-font-xs-13 */
+  --fs-s:14px;    --lh-s:22px;      /* --dsw-font-s-14 */
+  --fs-base:16px; --lh-base:24px;   /* --dsw-font-base-16 */
+  /* 16px 档在 DSH 里有两条并存的行高：base-16 = 24px，m-18 = 28px。
+     荣珂原来写死的 26px（成果卡全文框）离 28 更近，故单开 --lh-m 承它，
+     不去挤 --lh-base —— 挤了等于改正文基线。 */
+  --fs-m:16px;    --lh-m:28px;      /* --dsw-font-m-18（名字叫 18，真值 16/28） */
+  --fs-l:20px;    --lh-l:28px;      /* --dsw-font-l-20 */
+  --fs-xl:24px;   --lh-xl:32px;     /* --dsw-font-xl-24 */
+  --fs-code:12px; --lh-code:19px;   /* --dsw-font-markdown-code */
+  --font-brand:"Montserrat",var(--font);
+  /* 期刊版式的正文衬线：宋体族（Windows SimSun / macOS Songti / 思源宋体兜底），
+     西文先落 Georgia —— 正文衬线、标题保持黑体（默认无衬线），是中文期刊的排版惯例 */
+  --font-serif:Georgia,"Songti SC","STSong","SimSun","NSimSun","Noto Serif CJK SC","Source Han Serif SC",serif;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",
+         "Microsoft YaHei","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --mono:"SF Mono","JetBrains Mono","Fira Code",Consolas,"Liberation Mono",Menlo,monospace;
+  /* 正文与副栏重新指到阶梯上：14 的行高由 24 改成 dsh 的 22，
+     副栏 13 配 dsh 的 20（原来是 22）。这是**有意改基线**，不是顺手。 */
+  --fs-body:var(--fs-s);
+/* `<b>` 的 UA 默认是 `font-weight:bolder`（**相对**父级）：父级 700 时
+   嵌一层就叠到 900。实测全站 17 处渲染成 900，而设计上限是 700 ——
+   结果同一个 `<b>` 在不同容器里长得不一样，源码上看却一模一样。
+   嵌套不加粗：外层已经说过重了，内层没有理由更重。
+   （桌面中文黑体只有 400/700 两个真实字重，900 会被合成得发毛。） */
+b,strong{font-weight:700}
+/* 嵌套不再加粗：外层已经说过重了，内层没有理由更重。 */
+b b,b strong,strong b,strong strong{font-weight:inherit} --fs-sec:var(--fs-xs);
+  --lh-body:var(--lh-s); --lh-sec:var(--lh-xs);
+  --ease:cubic-bezier(.4,0,.2,1);
+  /* 稿件台：默认值写在这里而不是只靠 JS setProperty ——
+     静态就有定义，禁 JS/首帧之前也是对的（检查器会问"这个变量谁定义的"）。 */
+  --desk-w:560px; --desk-scale:1;
+  /* 单一内容宽度：对话流与轨迹页共用同一基线，否则两页左边缘会错开 */
+  --content:880px;
+
+  /* W14-B·alias-begin ── DSH 语义别名（指向荣珂已有变量，不新增原始色）──
+     工单第 1 节的映射表原样落地。守卫（ui_check 判据 B0）核两件事：
+     ① 每条右侧引用的变量都在标记层**之外**已有定义；② 层内不许出现 hex。 */
+  --label-primary:var(--fg);
+  --label-secondary:var(--fg-2);
+  --label-tertiary:var(--fg-3);
+  --label-primary-foreground:var(--on-ink);
+  --label-dimmed:var(--b-400);
+  --border-l2:var(--line-2);
+  --border-l3:var(--line-3);
+  --border-l4:var(--line-4);
+  --bg-layer-1:var(--bg);
+  --bg-layer-2:var(--bg-platform);
+  --bg-layer-3:var(--bg);
+  --bg-layer-4:var(--bg-overlay);
+  --bg-module-platform:var(--bg-platform);
+  --interactive-bg-hover:var(--hover);
+  --interactive-bg-active:var(--active);
+  --state-success-primary:var(--ok);
+  --state-warn-primary:var(--warn);
+  --state-error-primary:var(--err);
+  --state-business-primary:var(--biz);
+  --state-idle-primary:var(--b-400);
+  /* ZCode 的 primary 是黑白镜像（明 #000/白字，暗 #fff/黑字），蓝只给链接与图标 */
+  --brand-primary:var(--ink);
+  --markdown-code-block:var(--bg-code);
+  --focus-ring-width:2px;
+  --focus-ring-color:var(--biz);
+  /* B7/B10 还要这几条语义名：同样只指荣珂已有变量（color-mix 不算新原始色）。
+     tooltip/toast 在 DSH 里**两套主题都是深底**（bluish-850/800），所以亮色档
+     指静态最深的 --b-1000；暗色档在 [data-theme="dark"] 里跟着翻到 --bg-overlay。 */
+  --ghost-active-fill:var(--b-100);
+  --ghost-active-border:var(--b-500);
+  --tooltip-bg:var(--b-1000);
+  --tooltip-fg:var(--b-00);
+  --toast-bg:var(--b-1000);
+  --toast-label:var(--b-00);
+  --toast-action:var(--dk-400);
+  --menu-fill:color-mix(in srgb,var(--b-50) 58%,transparent);
+  --mask-fill:color-mix(in srgb,var(--b-1000) 24%,transparent);
+  --interactive-bg-hover-danger:color-mix(in srgb,var(--err) 5%,transparent);
+  /* 荣珂的顶部留白是真值 48px（.app padding-top），DSH 用它当 frame top clearance */
+  --frame-top-clearance:48px;
+  /* W14-B·alias-end */
+
+  /* ── W14-C · Codex 语义色（真源：openai/codex codex-rs/tui/styles.md + style.rs）
+     ★ 抄的是**数值与规约**，不是 Rust 代码 —— Codex 是终端 TUI，没有 Web 组件可抄。
+     必须落在 alias 标记层**之外**：那条纪律是"层内不许出现 hex"，而这里
+     #1C64C8/#8B6214/#63A8F8/#C4A767 就是上游实测拉下来的 hex 真值。
+     ★ --cx-warn 是"被动提示"，Codex 明写它**不得长得像错误** ⇒ 不复用 --err。 ── */
+  --cx-accent-light:#1C64C8;   /* LIGHT_BG_ACCENT_RGB（亮色档强调/选中/链接） */
+  --cx-accent-dark:#63A8F8;    /* ChatGPT Blue 200（暗色档强调/选中/链接） */
+  --cx-warn-light:#8B6214;     /* 亮色档哑光警示 */
+  --cx-warn-dark:#C4A767;      /* 暗色档哑光警示 */
+  --cx-accent:var(--cx-accent-light);
+  --cx-warn:var(--cx-warn-light);
+  /* 用户消息底 / 历史底：黑 alpha 0.04 / 0.02 叠底 —— 用 color-mix 算，不写死 */
+  --cx-user-bg:color-mix(in srgb,#000 4%,var(--bg));
+  --cx-user-bg-history:color-mix(in srgb,#000 2%,var(--bg));
+  /* 次级文字 = 前景与背景按 alpha 0.6 混合（且去过 dim、去过粗体）；
+     分隔线 = 同一公式 alpha 0.20。 */
+  --cx-secondary:color-mix(in srgb,var(--fg) 60%,var(--bg));
+  --cx-rule:color-mix(in srgb,var(--fg) 20%,var(--bg));
+}
+
+/* ★ 方圆形：对全部元素生效（dsh 就是挂在 `*,*:before,:after` 上）。
+   只改 corner-shape，一个 border-radius 都不碰 —— 不支持时静默退回圆弧。
+   ★★ 两条例外（DSH corner-shape.css 明写）：**满圆（50%）与胶囊（999px）
+   必须另配 corner-shape:round**，否则超椭圆会把它们压变形。
+   判据只写一份：下面这一条按「形状是哪四类」收口，而不是在每条规则里
+   各抄一遍 corner-shape:round —— 抄五处，将来加一个圆点就漏一处（H 型）。
+   用到满圆/胶囊的类：.sdot 状态点、.spin 加载环（50%）；
+   .chip 场景胶囊、.mat/.matx 材料胶囊（--r-pill）。**不许改名不登记。** */
+@supports (corner-shape:superellipse(1.5)){
+  *,*::before,*::after{corner-shape:var(--corner)}
+  .sdot,.sdot::before,.sdot::after,
+  .spin,.spin::before,.spin::after,
+  .chip,.chip::before,.chip::after,
+  .mat,.mat::before,.mat::after,.matx,.matx::before,.matx::after{corner-shape:round}
+}
+
+
+/* ── 暗色：只覆盖语义层，组件规则一行都不用动 ── */
+[data-theme="dark"]{
+  /* 暗色档 —— 面色（底色/描边/主按钮）沿用 ZCode Zai Dark 真值（参考件 .theme-zai-dark）：
+     background·sidebar #161616 / header·panel #202020 / card·input·popover #2b2b2b，
+     border rgba(255,255,255,.1)。
+     但**文字色阶不再用 ZCode 的 60%/30% 混合**：那套混合在暗底上淡到 3.1~5.4:1，
+     而设计源暗档的同位是 4.9~12.1:1（正文 17.5 / 次级 12.1 / 三级 8.5 / 说明 4.9）。
+     实测把它拉齐后：正文 17.5 / 次级 12.1 / 三级 8.5 / 说明 4.8:1。
+     色相仍保持中性（源偏蓝），只对齐**亮度档位**。 */
+  --bg:#161616; --bg-platform:#131313; --bg-code:#202020; --bg-overlay:#2b2b2b;
+  /* ★ 2026-10-28 `--bg-platform` 由 #161616 改为 #131313：
+     亮色下 --bg-platform(#f0f0f0) 比 --bg(#f8f8f8) 深一档（亮度比 1.073），
+     侧栏因此退后、主区前置 —— 暗色档原来把两者写成同一个 #161616，
+     这层关系归零（实测 11 个页面里侧栏与主区像素完全相同，只靠 1px 发丝线划界）。
+     取 #131313 (19) 得亮度比 0.974，与亮色是同一个视觉台阶（侧栏更深）。
+     `.app` 与 `.side` 都取这个令牌，主区取 --bg，相对关系不变。 */
+  --line-1:rgba(255,255,255,.06);
+  --line-2:rgba(255,255,255,.10);
+  --line-3:rgba(255,255,255,.15);
+  --line-4:rgba(255,255,255,.20);
+  --fg:#fafafa; --fg-2:rgba(250,250,250,.82); --fg-3:rgba(250,250,250,.68); --fg-cap:rgba(250,250,250,.48);
+  --b-100:#202020; --b-300:#404040;
+  --hover:rgba(255,255,255,.05);
+  --active:rgba(255,255,255,.08);
+  --hover-acc:rgba(255,255,255,.12);
+  /* ZCode 暗色的主按钮是白底黑字（--color-primary #fff / foreground #000）—— 与明色的黑底白字互为镜像 */
+  --ink:#f8f8f8; --on-ink:#161616;
+  --ok:#46bf72; --err:#ff5c5c; --warn:#ff8a30;
+  --ok-bg:rgba(70,191,114,.14); --ok-fg:#87d9a4;
+  --err-bg:rgba(255,92,92,.12); --err-fg:#ff9999;
+  --warn-bg:rgba(255,138,48,.12); --warn-fg:#ffb26b;
+  --biz:#4099ff; --biz-bg:#001d3d; --biz-fg:#80beff;
+  --think-fade:linear-gradient(180deg,#161616 20.19%,rgba(22,22,22,0) 100%);
+  --sweep:rgba(255,255,255,.07);
+  --shadow-1:0 2px 4px 0 rgba(0,0,0,.4);
+  --shadow-2:0 4px 12px 0 rgba(0,0,0,.3),0 2px 8px 0 rgba(0,0,0,.34);
+  --shadow-3:0 0 1px 0 rgba(0,0,0,.6),0 0 4px 0 rgba(0,0,0,.3),0 12px 32px 0 rgba(0,0,0,.5);
+  /* 暗色的 stroke 换白色族：DSH 暗色用 --dsw-alias-border-l3 = #ffffff29。
+     只覆盖颜色这一条 —— --elevation-stroke/-panel/-soft/-prominent 都是
+     透过 var(--elevation-stroke-color) 取值的，跟着翻，不必各抄一份。 */
+  --elevation-stroke-color:rgba(255,255,255,.16);
+  /* W14-B 别名层的暗色档：tooltip/toast 仍是深底（DSH 暗色 bluish-750 ≈ 本档 overlay），
+     菜单面与遮罩跟着翻深（DSH 真值 #43454a73 / #00000080，就近取已有变量）。 */
+  --tooltip-bg:var(--bg-overlay);
+  --toast-bg:var(--bg-overlay);
+  --ghost-active-border:var(--fg-3);
+  --menu-fill:color-mix(in srgb,var(--b-100) 45%,transparent);
+  --mask-fill:color-mix(in srgb,var(--b-1000) 50%,transparent);
+  --interactive-bg-hover-danger:color-mix(in srgb,var(--err) 15%,transparent);
+  /* W14-C · Codex 语义色的暗色档：accent/warn 翻到暗色真值，
+     user-bg 从"黑叠底"翻成"白叠底"（0.12 / 历史 0.16 —— 历史态**更亮**，
+     这正是 Codex 给的"已提交 vs 可编辑"亮度差）；secondary/rule 同公式，
+     var(--fg)/var(--bg) 已在本档翻深，重述一遍只为"六条在两档都有定义"。 */
+  --cx-accent:var(--cx-accent-dark);
+  --cx-warn:var(--cx-warn-dark);
+  --cx-user-bg:color-mix(in srgb,#fff 12%,var(--bg));
+  --cx-user-bg-history:color-mix(in srgb,#fff 16%,var(--bg));
+  --cx-secondary:color-mix(in srgb,var(--fg) 60%,var(--bg));
+  --cx-rule:color-mix(in srgb,var(--fg) 20%,var(--bg));
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* hidden 属性是最后一道显隐真相：任何组件级的 display 规则（.btn 的 flex 等）
+   都不许顶掉它 —— 实测「停止」按钮 hidden=true 却常显，就是被 .btn{display:flex} 顶掉的。 */
+[hidden]{display:none !important}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:var(--fs-body);
+  line-height:var(--lh-body);height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font-family:inherit;font-size:inherit;line-height:inherit}
+code,kbd,pre,table.grid td,.tech .kv,.kbn,.pill,.ms,.cnt,.prog .sub,.top .meta{font-variant-numeric:tabular-nums}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-4);border-radius:var(--r-sm);
+  border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--fg-cap);background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+::selection{background:rgba(103,158,254,.28)}
+:focus-visible{outline:var(--focus-ring-width) solid var(--focus-ring-color);outline-offset:2px;border-radius:var(--r-xs)}
+/* B11 · DSH 规矩：指针模态下**透明的是环，不是立面** ——
+   只把 outline 的颜色设透明，一条 box-shadow 都不清（清了立面就塌）。 */
+html[data-input-modality='pointer'] :focus-visible:not(:read-write){outline-color:transparent}

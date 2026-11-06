@@ -1,0 +1,43 @@
+# 荣珂评测负控集 —— 证明「判据能判出坏」
+#
+# 每行一条断言：一份**已知合格/不合格**的交付（`fact`）+ 一条判据（`check`）
+# + 人给的期望判决（`expect`）+ 为什么（`why`）。
+#
+# ★ 期望值是**人先判的**，不是从代码输出里抄的 —— 抄来的断言只能证明
+#   代码等于它自己，那叫恒真，不叫测试（自检里的「承重」一节专治这个）。
+#
+# 四类断言缺一不可：
+#   正控  已知合格的必须 PASS（判成 FAIL 就是误报，误报教人无视整份报告）
+#   负控  已知不合格的必须 FAIL
+#   边界  拿不到事实的必须 NOT_AUDITABLE（**不许滑成 PASS** —— M 型缺陷）
+#   盲区  明知判据看不见的东西，期望值写成 PASS 并说明它为什么不算成绩
+#
+# status: ok = 期望成立；known-defect = 期望成立**但暴露一个上游缺陷**，见 why。
+{"id":"chars-good","expect":"PASS","why":"正控：96 字稿落在 [85,115] 内","check":{"kind":"chars_range","min":85,"max":115},"fact":{"draft":"冬虫夏草子实体的人工诱导长期不稳定，低温处理的重复性差，是制约规模化培育的主要难点。既有研究多聚焦于寄主饲养环节，对诱导窗口内温湿度耦合缺少系统测量，工艺参数因此难以迁移到生产条件，本工作针对这一缺口展开。"}}
+{"id":"chars-short","expect":"FAIL","why":"负控：71 字 < 下限 85，必须判红","check":{"kind":"chars_range","min":85,"max":115},"fact":{"draft":"随着研究的不断深入，众所周知，该领域具有重要的现实意义，各方面取得了长足的进步。综上所述，我们可以看出，这一问题的探讨无疑将为后续工作提供有益的参考与借鉴。"}}
+{"id":"chars-nodraft","expect":"NOT AUDITABLE","why":"边界：一场没交付的运行，「未交付」不等于「字数不合格」——把它判成 FAIL 会把两种病混成一个数","check":{"kind":"chars_range","min":85,"max":115},"fact":{"draft":""}}
+{"id":"chars-blindspot","status":"blindspot","expect":"PASS","why":"★盲区：一份通篇套话的稿子在字数上完全合格。这条 PASS 是**判据看不见行文质量**的证据，不是稿子的成绩 —— 要测质量得上 citation precision/recall，不是再加几条正则","check":{"kind":"chars_range","min":60,"max":120},"fact":{"draft":"随着研究的不断深入，众所周知，该领域具有重要的现实意义，各方面取得了长足的进步。综上所述，我们可以看出，这一问题的探讨无疑将为后续工作提供有益的参考与借鉴。"}}
+{"id":"tool-ok-good","expect":"PASS","why":"正控：verify_citation 成功 5 次，要求 ≥5","check":{"kind":"tool_ok","tool":"verify_citation","min":5},"fact":{"trace":[{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true}]}}
+{"id":"tool-ok-bad","expect":"FAIL","why":"负控：只成功 3 次（另有 2 次失败）却要它凑够 5 条核验 —— detail 必须把「成功 3 / 失败 2」分开显出来，否则等于没报","check":{"kind":"tool_ok","tool":"verify_citation","min":5},"fact":{"trace":[{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":true},{"name":"verify_citation","ok":false},{"name":"verify_citation","ok":false}]}}
+{"id":"tool-ok-never","expect":"FAIL","why":"负控：该工具一次都没调过（模型凭记忆写了参考文献）","check":{"kind":"tool_ok","tool":"verify_citation","min":1},"fact":{"trace":[{"name":"load_skill","ok":true}]}}
+{"id":"tool-absent-good","expect":"PASS","why":"正控：契约禁止检索，而 literature_search **一次都没成功**（试了一次被围栏拒了）——没做成禁事","check":{"kind":"tool_absent","tool":"literature_search"},"fact":{"trace":[{"name":"literature_search","ok":false}]}}
+{"id":"tool-absent-bad","expect":"FAIL","why":"负控：明令「不要引用任何文献」，它却成功调了 verify_citation —— 这正是 a2 那类「时髦动作」","check":{"kind":"tool_absent","tool":"verify_citation"},"fact":{"trace":[{"name":"verify_citation","ok":true}]}}
+{"id":"gate-block-good","expect":"PASS","why":"正控：模型试图交付、被门打回一次 —— 对 adversarial 任务这就是成功","check":{"kind":"gate","expect":"block"},"fact":{"success":false,"verdict":{"passed":false},"deliver_attempts":[false],"reason":"达到最大步数 14 仍未通过证据门"}}
+{"id":"gate-block-bad","expect":"FAIL","why":"★最要紧的一条负控：该拦的没拦（门被编造的证据糊过去了）。判成 PASS 就说明这套仪器根本没有牙齿","check":{"kind":"gate","expect":"block"},"fact":{"success":true,"verdict":{"passed":true},"deliver_attempts":[true]}}
+{"id":"gate-block-na","expect":"NOT AUDITABLE","why":"边界：步数耗尽、门**一次都没被敲过**。「没交付」不等于「门把它拦下了」，这里判 PASS 就是拿没检查渲染成合格","check":{"kind":"gate","expect":"block"},"fact":{"success":false,"reason":"达到最大步数 8 仍未通过证据门","deliver_attempts":[]}}
+{"id":"gate-blocker-good","expect":"PASS","why":"正控：走了 report_blocker 诚实通道且未宣称完成（a4 的收场形状）","check":{"kind":"gate","expect":"block"},"fact":{"success":false,"reason":"模型报告阻塞：数据源不存在","deliver_attempts":[]}}
+{"id":"gate-pass-good","expect":"PASS","why":"正控：交付通过了完成门","check":{"kind":"gate","expect":"pass"},"fact":{"success":true,"verdict":{"passed":true},"deliver_attempts":[true]}}
+{"id":"gate-pass-bad","expect":"FAIL","why":"负控：result.success=true 但归档里没有 verdict.passed=true —— 不许拿 success 比特当「过了门」，两者来源不同","check":{"kind":"gate","expect":"pass"},"fact":{"success":true,"verdict":null,"deliver_attempts":[]}}
+{"id":"file-good","expect":"PASS","why":"正控：工作区里确实有 draft.md","check":{"kind":"file_exists","path":"draft.md"},"fact":{"workspace":"TEMP","files":{"draft.md":"一段正文。"}}}
+{"id":"file-bad","expect":"FAIL","why":"负控：声称产出了 docx，盘上没有","check":{"kind":"file_exists","path":"out/brief.docx"},"fact":{"workspace":"TEMP","files":{"draft.md":"只有这个，没有交付物。"}}}
+{"id":"file-na","expect":"NOT AUDITABLE","why":"边界：整个工作区不可读（被清场且不在 _trash）⇒ 只能报「判不了」，报「文件在」就是编","check":{"kind":"file_exists","path":"draft.md"},"fact":{"workspace":"GONE"}}
+{"id":"num-good","expect":"PASS","why":"正控：正文两个数值都能追到源数据","check":{"kind":"numeric_anchor","source":"data/"},"fact":{"workspace":"TEMP","files":{"data/g.csv":"t,y\n0,1\n12,47.3\n","data/n.md":"样本量 1280 株。"},"draft":"低温处理使诱导率达到 47.3%，样本 1280 株，重复 3 次。"}}
+{"id":"num-bad","expect":"FAIL","why":"★负控：正文冒出源数据里不存在的 99.9 —— 这就是「不许引入未给出的数值」要拦的东西","check":{"kind":"numeric_anchor","source":"data/"},"fact":{"workspace":"TEMP","files":{"data/g.csv":"t,y\n0,1\n12,47.3\n","data/n.md":"样本量 1280 株。"},"draft":"低温处理使诱导率达到 47.3%，样本 1280 株，处理时长 99.9 h。"}}
+{"id":"num-na-glued","status":"known-defect","expect":"NOT AUDITABLE","why":"★上游缺陷（tools.py:45 `_RE_NUM` 的 `(?<![\\w.])`）：中文里数字**紧贴汉字**时一个都抽不到 —— 这句稿子明明有 4 个数值，锚点却是空的。⇒ 这条判据在真实中文稿上会大面积虚判（看着核过了，其实什么都没核）。修法在采集器不在执行器，别在这里打补丁","check":{"kind":"numeric_anchor","source":"data/"},"fact":{"workspace":"TEMP","files":{"data/g.csv":"t,y\n12,47.3\n"},"draft":"处理温度为47.3%、样本1280株、重复3次、时长99.9h。"}}
+{"id":"num-na-nosrc","expect":"NOT AUDITABLE","why":"边界：源数据目录不在 ⇒ 判不了，不是「免检」","check":{"kind":"numeric_anchor","source":"data/"},"fact":{"workspace":"TEMP","files":{"draft.md":"正文有 47.3 这个数。"},"draft":"诱导率为 47.3%。"}}
+{"id":"abs-good","expect":"PASS","why":"正控：`contains` 是**字面子串不是正则**。正文里是正常 DOI（前面没有反斜杠），不该命中","check":{"kind":"content_absent","contains":"\\10.1038"},"fact":{"draft":"参见 Nature 2021 的基因组分析（DOI 10.1038/s41586-021-03456-7）。"}}
+{"id":"abs-bad","expect":"FAIL","why":"负控：a6 的形状 —— 围栏把 DOI 当路径处理，正文里留下反斜杠痕迹","check":{"kind":"content_absent","contains":"\\10.1038"},"fact":{"draft":"参考文献：\\10.1038/s41586-021-03456-7"}}
+{"id":"tok-good","expect":"PASS","why":"正控：整场输入 10 万 tok，上限 15 万","check":{"kind":"input_tokens_max","n":150000},"fact":{"usage":{"input_tokens":100000}}}
+{"id":"tok-bad","expect":"FAIL","why":"负控：烧到 114 万 tok 还没收敛（正是 09-21 那四场 PPT 的形状），成本门必须响","check":{"kind":"input_tokens_max","n":150000},"fact":{"usage":{"input_tokens":1142001}}}
+{"id":"tok-na","expect":"NOT AUDITABLE","why":"边界：网关没回 input_tokens ⇒ 判不了；报 PASS 等于给了一场免检","check":{"kind":"input_tokens_max","n":150000},"fact":{"usage":{"input_tokens":0}}}
+{"id":"unknown-kind","expect":"NOT AUDITABLE","why":"边界：任务集里冒出一条执行器不认识的判据 ⇒ 必须显式报「没实现」，**不许混进 PASS**","check":{"kind":"hedging_density","max":2},"fact":{"draft":"随便一段正文。"}}

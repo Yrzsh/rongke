@@ -1,0 +1,15 @@
+{
+  "id": "lean-context",
+  "name": "精简上下文（按任务装配）",
+  "description": "开场只装配本任务用得上的 SYSTEM 节，之后整场冻结：省掉 PPT/配图段，同时保住跨任务的交付纪律。演示渐进披露与前缀缓存稳定前缀的调和。",
+  "order": 90,
+  "scenes": ["writing"],
+  "base": "baseline",
+  "plugins": [
+    {
+      "id": "system-assembly",
+      "name": "@rongke/system-assembly",
+      "config": { "sections": ["writing"] }
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+# ============================================================
+# 荣珂 · 版本库排除清单
+#
+# 原则：进库的只有「源码 + 测试 + 文档 + 可再生的参考产物」。
+#       凡是「本机状态 / 运行痕迹 / 个人上下文 / 大体积可再生位图」，一律排除。
+#
+# 纪律：gitignore 不支持行尾注释 —— 注释必须独立成行。
+#       否则 # 之后整段字会被当成模式的一部分，那条规则静默失效。
+#       （本项目真踩过：写上行尾注释后，.backups/ 与 ui_shots/ 照样被暂存。）
+# ============================================================
+
+# ---- 运行归档与任务工作区：每次任务一个工作区，300MB+，是本机运行痕迹而非源码 ----
+runs/
+
+# ---- 课题台账（导师模式 P1/P2）：`<项目根>/topics/` ----
+# 它是**用户的一手内容**（学生的课题计划、读过的文献、卡点台账），不是源码。
+# 排除理由与 `runs/` 同源：本机状态 + 各人各样。
+# ⚠️ 但它比 `runs/` 更该小心 —— `runs/` 丢了只是这次任务的痕迹，
+#    `topics/` 丢了是**这个学生几个月的账**。所以排除了**不等于可以随便删**，
+#    真要在多机同步，应该走备份而不是走版本库。
+topics/
+
+# ---- vendor/ppt-mcp **故意进库**（MIT，见下）；vendor/skills **例外**，见文件末尾 ----
+# 它是第三方源码的「钉版本副本」（vendor/ppt-mcp，上游 MIT），进库是有意的：
+# 让「组会 PPT」这条能力**不依赖任何一次成功的网络安装**，
+# 且"服务端到底是哪一份"永远可回答。
+#   复核没被改动：cd vendor/ppt-mcp && sha256sum -c SHA256SUMS
+#   自带的 LICENSE 是 MIT 合规要求（许可证须随副本保留），**不能删**。
+# 它属于上面原则里的「源码」，是这类成员的**唯一一处**——新增同类目录时
+# 请在这里记一句，别让人以为它是误入库。
+
+# ---- 本地快照：snapshot.py 的回滚点，只在写它的那台机器上有意义 ----
+.backups/
+*.bak
+*.bak_*
+
+# ---- 测试截图产物与临时 DOM 转储 ----
+ui_shots/
+ui_shot.png
+ui2_shot.png
+ui_dom.html
+ui2_dom.html
+ui2_empty.html
+
+# ---- web_test 的「工作区外」测试夹具 ----
+_webtest_outside/
+
+# ---- 本机工作记忆：含本机路径、项目日志与个人上下文 ----
+.workbuddy/
+
+# ---- 运行时台账：每次跑任务都在变，属于机器状态而不是源码 ----
+memory/runs.jsonl
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+# 打包产物（pip wheel / build）：不进仓库，发布走 release 附件
+build/
+dist/
+*.whl
+# 打包时的临时元数据目录
+*.egg-info
+.pytest_cache/
+
+# ---- 日志 ----
+*.log
+
+# ---- 大体积可再生产物：600 dpi 位图（21MB / 张）----
+# 源数据与纯渲染器都在库里，可确定性重建：
+#   figures/make_demo_data.py（唯一含随机数者）→ CSV → figures/plot_conversion.py（零随机数）
+figures/*.tiff
+
+# ---- 密钥与本地凭据 ----
+*.pem
+*.key
+.env
+.env.*
+
+# ---- 编辑器与操作系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- 品牌模板（用户自己的资产，**不进仓库**）----
+# 模板本体是学校发的 47MB .pptx，归用户；仓库里只留**抽出来的槽位表**
+# （docs/deck-templates/*/slots.json）与渲染出来的样张。
+docs/deck-templates/*/template.pptx
+docs/deck-templates/*/*.src.pptx
+# `deck_from_template` 写的 origin sidecar（门做基线扣除要用它；
+# 它是**派生产物**，丢了只是这次少扣一点，不是能力缺失）
+*.origin.json
+*.template.json
+
+# ---- 账单：账户与流水（**绝不进仓库**）----
+# 里面是账户 id、pbkdf2 的盐与密码摘要、以及每一次消耗的流水。
+# 这是**隐私**，不是构建产物：一旦被 `git add .` 提交、推到哪儿都收不回来。
+# 原先它一条都没被忽略 —— 目录当时刚好还是 untracked，纯属运气。
+billing/
+# 数据根被 `RONGKE_DATA` 指到别处时的同族文件
+**/billing/account.json
+**/billing/ledger.jsonl
+**/billing/.account.lock*
+**/billing/.ledger.lock*
+
+# ---- 授权：激活码与试用起点（也不进仓库）----
+# 激活码本身不是秘密（它由私钥签出，公开也无所谓），但试用起点是**本机
+# 事实**，进了仓库会让别人克隆到你的首次运行时间。一并忽略，省得想。
+license/
+**/license/code.txt
+**/license/trial.json
+**/license/code.txt.abandoned
+
+# ---- 发行方私钥：**绝对不能进仓库** ----
+# 私钥一旦泄露，任何人都能签出有效激活码，整套授权立刻失效。
+# 下面三种是它可能出现的样子：命令行直接给、存成文件、或别处的备份。
+*.sk
+**/*.privkey
+secrets.json
+
+
+# ---- 发行收敛（2026-10-29）：根目录一次性探针/临时脚本 ----
+# 仓库根长期有 400+ 个 _*.py 探针、日志与 .bak 备份。它们不是源码，
+# 但会让 git status 长草、让 clone 后的 CI 误以为它们是测试。
+/_*.py
+/_*.js
+/_*.json
+/_*.txt
+/_*.md
+/_*.png
+/_*.html
+/_*.log
+/_*.port
+/00_总控/
+/dsh_ref/
+/_probe_hist_out/
+/_coop/
+/_pw_clone/
+/_webtest_mem/
+/eval/reports/
+
+# ---- 源码树里的试用/激活目录 ----
+# Windows 上 base/"license" 会与仓库根的 LICENSE 文件撞名（大小写不敏感），
+# license.py 遇到这种撞名会退到 .license。两个名字都排除。
+/.license/
+**/.license/
+
+# ---- 本机配置 ----
+# config.json 含本机解释器/模板/MCP 绝对路径，已从版本库移除；
+# 可移植示例见 config.example.json，本机覆盖放 ~/.rongke/config.json。
+/config.json
+
+# ---- 2026-10-31：为**公开仓库**补的三类（下文都有实测理由）----
+#
+# ① 真实研究材料：`evidence/` 下是作者本人的课题产物（方案、CNKI 检索结果、
+#    文献 XML、拟发表内容）。公开出去等于把未发表的研究直接放上网。
+#    它和 `runs/` 不同：`runs/` 只是本次任务的痕迹，这里是**内容本身**。
+/evidence/
+#
+# ② 运行期记录：`memory/` 里只有 `lessons.md` 是源码级资产，其余是按次追加的
+#    使用流水（例如 kb_picks.jsonl 记录每次检索选了哪几篇）。别人克隆到你的
+#    使用习惯没有必要，也不该出现在版本库里。
+/memory/*.jsonl
+/memory/*.json
+#
+# ③ 根目录**带前缀**的临时脚本：上面 `/_\*` 那条只挡以下划线开头的，
+#    而实测残留的是 `w14_probe.py`、`dsh_tokens_extract.py`、`clawsgo_align_*.py`
+#    这类。它们是排查用的探针，不是测试（CI 里跑不了），留着只会让仓库长草。
+/w[0-9]*_*.py
+/w[0-9]*.py
+/dsh_*.py
+/clawsgo_*.py
+#
+# ④ 未跟踪的中间产物目录
+/_w[0-9]*/
+/ui_shots/
+
+# ---- 2026-10-31：Tavotto **源码不随库**，只留内化的技能 ----
+# 上游 `Tavotto/Tavotto` 是完整桌面应用（111MB / 5139 个文件）。荣珂**真正用到的
+# 只有它 codex-plugin/skills/tavotto-figure 那 141KB**，已内化进
+# `vendor/skills/tavotto-figure/`（随包分发的技能，见 `stages.py::_BUNDLED_SKILLS`）。
+#
+# 为什么在 vendor/ 里单独开一个例外（而 vendor/ppt-mcp 仍然进库）：
+#   进库的目的是"钉一个可复核的第三方副本"。ppt-mcp 是荣珂直接调用的服务，
+#   改没改要能用 SHA256SUMS 复核；而 Tavotto 的交接走的是**用户机上已安装的
+#   桌面版**（官方 scripts/handoff.py 自己去 locate），这里的源码树从头到尾
+#   不参与运行 —— 钉它进库只是白白让克隆者多拉 111MB。
+#
+# ⚠️ 上游是 AGPL-3.0。内化的是它的**技能文档与交接脚本**（同许可证，LICENSE 已
+#    随目录保留在 vendor/skills/tavotto-figure/）。若日后要做二进制分发，
+#    AGPL 的传染范围需要单独确认 —— 这条规则不解决许可证问题。
+/vendor/Tavotto/
+
+# ---- 演示件：**不入库**（2026-10-31 用户明确选择）----
+# `docs/deck-templates/*/` 下的 demo/sheet 是渲染出来的样例（pptx + png），
+# 能从模板重新生成，不是源码。模板定义（kinds.json / *.json spec）照旧进库。
+docs/deck-templates/*/*.pptx
+docs/deck-templates/*/*-sheet.png
+docs/deck-templates/*/deck_audit.json
+docs/**/_preview/
+
+
+# ---- mentor-mode probe artifacts (2026-11-03 real-question test) ----
+/_rk1_probe/
+/_rk1_backup/
+
+# ---- 2026-11-05：框架开源 ⇒ 第三方技能集不进公开仓 ----
+# `vendor/skills/` 是 Supervisor Skills 等第三方内容，许可证为
+# **CC BY-NC-SA 4.0**（禁止商用 + 相同方式共享），其中 tavotto-figure 还带
+# AGPL-3.0 上游。它与「Apache-2.0 开源框架 + 专有商业桌面软件」双轨相冲突：
+# 把 NC 内容推进公开仓既构成再分发，也会让下游误以为整套可商用。
+#
+# 处理方式：`git rm --cached -r vendor/skills`（**只撤索引，本地文件保留**，
+# 开发机照常能跑）；开源发行件改带 `rongke/skills/` 下**自研**的 Apache-2.0
+# 最小技能。需要复现完整第三方技能的人自行按 `NOTICE.md` 的说明取得。
+#
+# ⚠️ 不要删本地目录：`stages.py::_BUNDLED_SKILLS` 仍会扫它，
+#    本机开发/回归依赖这份副本；只是不再随公开仓分发。
+/vendor/skills/
+
+# ── 朋友版预置材料（2026-11-06）──────────────────────────────
+# `packaging/_friend_private/` 里是**明文 API 密钥**与精简网关配置，
+# 由 `packaging/rongke-friend.iss` 在构建时打进「朋友版」安装包。
+# 这个目录只在本地存在，绝不进版本库 / wheel / sdist / 正式版安装包。
+# 公开仓里只留构建配方（.iss）和说明（FRIEND-NOTES.txt），两者都不含密钥。
+/packaging/_friend_private/
+/dist/RongkeSetup-*-Friend.exe
+
+# ── 本机过程产物 / 第三方副本（不进公开仓，2026-11-06）──────
+# 这些是构建快照、一次性探针、工具输出，跟框架源码无关；
+# 里面还夹着本机绝对路径，公开前一律挡在版本库外。
+/build.stale_*/
+/_realp/
+/tool_results/
+/vendor/Supervisor.skill/
+/.zcodeignore
+
+
