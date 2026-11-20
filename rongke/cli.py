@@ -76,6 +76,22 @@ def make_reporter(color: bool = True, show_content: bool = False,
     def rep(kind: str, d: dict) -> None:
         if kind == "workspace":
             print(f"{R['dim']}· 工作区：{d.get('path')}{R['r']}")
+        elif kind == "preset_mounted":
+            tools = d.get("registered_tools") or []
+            print(f"{R['dim']}· 能力预设：{d.get('preset')}（healthy={d.get('healthy')}"
+                  f"{' · 临时工具=' + ','.join(tools) if tools else ''}）{R['r']}")
+        elif kind == "preset_error":
+            print(f"{R['y']}⚠ 能力预设 {d.get('preset')} 装载失败：{d.get('error')}"
+                  f"（回退 {d.get('fallback') or 'baseline'}）{R['r']}", file=sys.stderr)
+        elif kind == "preset_cleanup_error":
+            print(f"{R['y']}⚠ 预设临时工具撤销失败：{d.get('tool')}（{d.get('preset')}）{R['r']}",
+                  file=sys.stderr)
+        elif kind == "preset_stages":
+            print(f"  {R['dim']}· 预设工序（{d.get('preset')}）："
+                  f"{', '.join(d.get('stages') or [])}{R['r']}")
+        elif kind == "run_shape":
+            print(f"  {R['dim']}· 任务形状：{d.get('kind')} · 步数={d.get('max_steps')}"
+                  f"{' · 预设=' + str(d.get('preset')) if d.get('preset') else ''}{R['r']}")
         elif kind == "memory_recall":
             print(f"  {R['dim']}· 已注入历史参考（{d.get('chars')} 字符，仅供提示不作证据）{R['r']}")
         elif kind == "memory_saved":
@@ -1124,6 +1140,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--show-content", action="store_true", help="显示模型的思考文本")
     ap.add_argument("--tools", action="store_true", help="列出已装配工具后退出")
+    ap.add_argument("--wiring", action="store_true",
+                    help="接线全景只读自检：在册/schema/常驻/钩子/外部能力错误，"
+                         "带会话指纹；有缺口退出码 1")
+    ap.add_argument("--wiring-html", metavar="路径", default="",
+                    help="配合 --wiring：把全景导成一份可交付的 HTML")
     ap.add_argument("--mcp", dest="mcp_status", action="store_true",
                     help="列出 MCP 服务端与工具（含没能连上的原因）后退出")
     ap.add_argument("--mcp-doctor", dest="mcp_doctor", action="store_true",
@@ -1142,6 +1163,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="列出能力预设与**挂载健康度**（坏件带理由），然后退出")
     ap.add_argument("--live", dest="presets_live", action="store_true",
                     help="配合 --presets：逐份真挂载并打印行数，坏件以退出码 1 报出")
+    ap.add_argument("--preset", metavar="ID", default="",
+                    help="本次运行使用的能力预设 id（如 paper-writing / stats-review / deck；"
+                         "可用 --presets 查看全部）")
+    ap.add_argument("--mode", choices=("", "auto", "task", "answer"), default="",
+                    help="运行模式：auto（默认由契约判断）/ task（任务模式）/ answer（仅问答）")
     # ★ 用 `nargs="*"` 而不是 `nargs="?"`：
     #   `--billing plan pro` 里 `pro` 是第二个值，`nargs="?"` 只吃 `plan`，
     #   于是 `pro` 掉成位置参数（被当成任务目标）—— 实测踩到，
@@ -1233,6 +1259,21 @@ def main(argv: list[str] | None = None) -> int:
         rk.close()
         return 0
 
+    if args.wiring:
+        from pathlib import Path
+        from .wiring import (DEFAULT_LOOP_PY, format_text, inspect,
+                            render_html)
+        rk = Rongke(cfg)
+        rep = inspect(rk.registry, hook_policy_source=DEFAULT_LOOP_PY)
+        print(format_text(rep))
+        if args.wiring_html:
+            dest = Path(args.wiring_html).expanduser().resolve()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(render_html(rep), encoding="utf-8")
+            print(f"HTML → {dest}")
+        rk.close()
+        return 0 if rep["summary"]["ok"] else 1
+
     if args.mcp_status:
         return cmd_mcp(cfg)
 
@@ -1322,10 +1363,17 @@ def main(argv: list[str] | None = None) -> int:
 
     goal = args.goal or contract.raw_goal      # type: ignore[union-attr]
 
+    run_mode = "" if args.mode in ("", "auto") else str(args.mode)
+    run_preset = str(args.preset or "").strip()
+
     if args.contract_only or args.contract_out:
         if contract is None:
             llm = LLM(cfg.provider, timeout=cfg.loop.request_timeout)
             contract = TaskContract.draft(goal, llm)
+        if run_mode == "answer":
+            contract.answer_only = True
+        elif run_mode == "task":
+            contract.answer_only = False
         payload = json.dumps(contract.to_dict(), ensure_ascii=False, indent=2)
         if args.contract_out:
             Path(args.contract_out).write_text(payload, encoding="utf-8")
@@ -1368,6 +1416,8 @@ def main(argv: list[str] | None = None) -> int:
             on_event=None if args.json else make_reporter(color, args.show_content),
             cancel=cancel,
             workspace=Path(args.workspace).resolve() if args.workspace else None,
+            mode=run_mode,
+            preset=run_preset,
         )
     except LLMError as e:
         print(f"\nLLM 调用失败：{e}", file=sys.stderr)

@@ -541,7 +541,7 @@ _T.current = _orig_current
 check("`topic.current` 已还原（第 8.3 节收尾）", _T.current is _orig_current, True)
 
 # ═══ 9. 注册面：工具集与文档口径（改工具必须同步改数字） ═══════════
-print("\n── 9. 注册面：课题工具集恰好 10 个，且与文档口径一致 ──")
+print("\n── 9. 注册面：课题工具集恰好 20 个，且与文档口径一致 ──")
 # ★ 2026-11-02 由「恰好 9 个」改为「恰好 10 个」。
 #   本轮加的是 `lab_method` —— 起因是一次**能力空转**：
 #   `lab_assets.DAPI_PROTOCOLS / STAIN_FAILURE_BRANCHES / STAIN_FIRST_RUN`
@@ -562,9 +562,28 @@ print("\n── 9. 注册面：课题工具集恰好 10 个，且与文档口径
 #   所以这两次都是补**根本不存在的东西**，不是"顺手多加几个"。
 #   ⇒ 改的是**口径**（5 ⇒ 7 ⇒ 9），不是把断言绕过去：
 #   工具数同时被 `product_doc_test` 与 `docs/产品说明.md` 的「内置 N 个工具」
-#   钉着（现为 65），三处必须一起动，否则文档数字当场腐坏。
-check("★ 课题工具恰好 10 个（与 `docs/产品说明.md` 的 66 个、`product_doc_test` 同口径）",
-      sorted(_tf), ["lab_method", "lab_record", "lab_report", "raise_blocker",
+#   钉着，三处必须一起动，否则文档数字当场腐坏。
+# ★ 2026-11-14 由「恰好 10 个」改为「恰好 13 个」。本轮加的是
+#   `advisor_status` / `advisor_save` / `advisor_read` —— 导师模型
+#   （`vendor/Supervisor.skill` 那套四层蒸馏）的落盘与读回。
+#   加它们的理由与前两次同一条：上游 skill 只写了「怎么蒸馏」，
+#   蒸馏完落哪儿、怎么读回来、怎么接进本次会话 —— 那是宿主的事，
+#   而模型当时**没有一只手套能把它写成文件**。
+# ★ 2026-11-15 由「恰好 13 个」改为「恰好 16 个」。本轮加的是
+#   `outline_save` / `outline_status` / `outline_to_lab` —— 开题大纲。
+#   加它们的理由与上三次同一条：课题台账里已有 PLAN.md，
+#   但那是**自由文本** —— 没有任何一处强制回答「这句话靠哪个数据成立」。
+#   新的“开题大纲”把「要写什么」与「要做什么」用 id 连成一条线，
+#   断线当场报出来 —— 这是新的**结构**，不是又一份散文建议。
+# ★ 后续新增 `lab_plan`（实验计划拆解与随访排期）后课题工具计 21 个。
+check("★ 课题工具恰好 21 个（与 `docs/产品说明.md`、`product_doc_test` 同口径）",
+      sorted(_tf), ["advisor_read", "advisor_save", "advisor_status",
+                    "lab_method", "lab_plan", "lab_record", "lab_report",
+                    "method_record", "method_status",
+                    "outline_save", "outline_status", "outline_to_lab",
+                    "patent_leads",
+        "plate_qc",
+                    "raise_blocker",
                     "resolve_blocker", "topic_link", "topic_status", "topic_update",
                     "topic_use", "topic_write"])
 check("★ `topic_status` 的 schema 是**加**字段（slug 还在，旧调用方不受影响）",

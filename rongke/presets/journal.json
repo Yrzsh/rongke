@@ -1,0 +1,36 @@
+{
+  "id": "journal",
+  "name": "岸记（实验手记 / 规划看板）",
+  "description": "把实验记录与规划写成《岸记》体例的日记：起／验（问·读回·判词）／朱批／收（含不宣称）／明日（同源长成规划）／锚。挂载后模型在做完实验、翻案、定下一步时自己记一笔。删掉 caps_ext/shore_journal.py 整条退回原样。",
+  "order": 40,
+  "scenes": ["writing"],
+  "base": "baseline",
+  "plugins": [
+    {
+      "op": "insert",
+      "id": "shore-journal-voice",
+      "name": "@external/shore-journal-voice",
+      "config": { "enabled": true }
+    },
+    {
+      "op": "insert",
+      "id": "shore-journal",
+      "name": "@external/shore-journal",
+      "config": { "dir": "journal", "expose": true, "theme": "手记" }
+    },
+    {
+      "op": "patch",
+      "id": "prompt",
+      "config": {
+        "sections": [
+          "identity",
+          "tools",
+          "runtime",
+          "safety",
+          "skills",
+          "external-shore-journal"
+        ]
+      }
+    }
+  ]
+}

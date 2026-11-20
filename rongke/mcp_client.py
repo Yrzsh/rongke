@@ -692,23 +692,35 @@ def _content_text(res: dict) -> str:
 def _payload_failure(text: str, field_name: str) -> str:
     """载荷里写着失败吗？返回失败原因；不是失败返回 ""。
 
-    两条口径，理由各不相同：
+    两条判据**按序检查、互不短路**：
 
-    **(甲) 自述字段**（默认 `ok`）**是字面 false** —— 认；是别的（含 true / 0 / "" / null）
-        一律**不认**。宁可漏认也不能误认：误报会把正常结果说成失败
-        （"误报比漏报更伤"，设计定律 10）。
-        ★ 有自述且自述不指向失败 ⇒ **以自述为准，直接收工**，不看别的键。
+    **(甲) 自述字段**（默认 `ok`）**是字面 false** —— 认；是别的（含 true / 0 /
+        "" / null）一律**不认**。宁可漏认也不能误认：误报会把正常结果说成失败
+        （"误报比漏报更伤"，设计定律 10）。自述为字面 false 时，按
+        error/msg/message/reason/detail 的顺序找原因，找不到给一句兜底文案，
+        **优先返回**。
+        ★ 自述不是 false（最常见 `ok: true`）**不再就此收工**，继续看乙条。
+          （旧口径「有自述且自述不指向失败 ⇒ 以自述为准，直接收工，不看别的键」
+          已于 2026-11-14 废止：它把 `ok:true` + 非空 `error` 的假成功放过了。
+          这是**口径变更**而非放宽判据，理由见乙条。）
+          `ok:true` 只说明"服务端想报成功"，挡不住同一份载荷里还写了一句
+          非空 `error`；**成功载荷不会写非空 error**，写了就是自相矛盾的假成功。
 
-    **(乙) 没有自述字段时，顶层 `error` 是**非空字符串** —— 认。**
+    **(乙) 顶层 `error` 是**非空字符串** —— 认。**（无条件检查，甲没返回才到这里）
         这条是 2026-09-21 补的，来自实测：`vendor/ppt-mcp`（上游 Office-PowerPoint
         MCP Server v2.0.7）**149 处**失败返回全是裸 `{"error": "..."}`，
         既不带 `ok`，`isError` 也仍是 false ⇒ 甲条收不到它，
         于是「协议层成功 + 载荷写着失败」会滑成 `ToolCall.ok=True`，
         **假证据直接进证据门** —— 正是本文件 `call()` 里点名的那类最危险情形。
+        2026-11-14 把乙条从"只在没有自述字段时生效"改成**无条件生效**：
+        web_extract 外域失败会回 `{"ok": true, "error": "外域抓取失败"}`，
+        旧写法见到 `ok:true` 就 `return ""`，恰好把它放过去。
         判据刻意收得极窄：**只认 `str` 且 strip 后非空**。
         `null` / `""` / `false` / `0` / 对象 / 数组 一律不算，
-        所以 `{"ok": true, "error": null}`、`{"error": ""}` 这类正常载荷不会被误读。
-        为什么敢认这个键：在 JSON 载荷里 `error` **只可能表示失败**，
+        所以 `{"ok": true, "error": null}`、`{"ok": true, "error": ""}`、
+        `{"ok": true, "data": {...}}` 这类正常载荷不会被误读。
+        为什么敢认这个键：在 JSON 载荷里 `error` **只可能表示失败**；
+        **`ok:true` + 非空 `error` 必须判失败，因为成功载荷不会写 error**，
         没有哪种成功返回会把 error 填一句非空的话（上游成功的载荷用 `success`）。
 
     真要用别的口径，把 spec.ok_field 设成别的字段名，或设空关掉
@@ -732,7 +744,8 @@ def _payload_failure(text: str, field_name: str) -> str:
                 if v:
                     return str(v)
             return f"{field_name}=false（服务端没给原因）"
-        return ""
+    # 乙条：顶层 error 非空字符串 ⇒ 失败。**无条件检查** —— 甲没返回（含自述
+    # 为 true / 0 / "" / null 等非 False 值时）不再就此收工，必须继续看这里。
     v = d.get("error")
     if isinstance(v, str) and v.strip():
         return v

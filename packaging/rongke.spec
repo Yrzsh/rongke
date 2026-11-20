@@ -36,6 +36,16 @@ datas += [(p, "rongke/caps_ext")
           for p in sorted(glob.glob(os.path.join(ROOT, "rongke", "caps_ext", "*.py")))
           if not os.path.basename(p).startswith("_")]
 
+# ── AI 画布引擎（2026-11-11 补，与 pyproject packages 两处同时改）──────
+# `caps_ext/canvas_desk.py` 按 `Path(__file__).parents[2]` 反查项目根后
+# `import aideck`；冻结版项目根是 _MEIPASS，所以目标目录必须是 `aideck`。
+# 只打 wheel 不打冻结版 ⇒ 安装 exe 的用户看到
+# `CANVAS_BACKEND_UNAVAILABLE`，而工具明明在册 —— 典型的「以为接上了」。
+# ⚠️ 不能沿用 caps_ext 的「下划线开头不发布」规则：aideck 的
+# `__init__.py` / `__main__.py` 恰好以 `_` 开头，滤掉就不是一个包了。
+datas += [(p, "aideck")
+          for p in sorted(glob.glob(os.path.join(ROOT, "aideck", "*.py")))]
+
 # ── 自研最小技能（2026-11-05 开源双轨补）──────────────────────────────
 # `vendor/skills/` 是 CC BY-NC-SA 4.0 第三方内容，不进公开仓也不进发行件。
 # `stages.SKILL_ROOTS` 会扫包内 `rongke/skills/<name>/SKILL.md`；冻结版
@@ -50,6 +60,8 @@ for _sd in sorted(glob.glob(os.path.join(_skill_root, "*"))):
 
 # 核心是纯标准库；但 server/loop 里有大量惰性导入，交给 collect_submodules 扫全。
 hiddenimports = collect_submodules("rongke")
+# aideck 由 canvas_desk 在函数内 `import aideck`（静态分析多半扫不到）：
+hiddenimports += ["aideck", "aideck.canvas", "aideck.studio", "aideck.serve"]
 # workbench 的 litkb 是外部文件，PyInstaller 看不到它的 import：
 # sqlite3 是它建 FTS 索引用的标准库，别的核心路径没用到，必须显式带上。
 hiddenimports += ["sqlite3"]

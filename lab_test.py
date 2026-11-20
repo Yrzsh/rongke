@@ -441,6 +441,43 @@ raises(lambda: lab.say_report("no-such-topic", root=TMP),
        "负控：不存在的课题 ⇒ say 报错而不是编一段（与 lab_path 同一条纪律）",
        "课题不存在")
 
+print("=" * 72)
+print("15. timeline：Web 台账视图的 seq / 作废标记（单源，前端不另算）")
+import json as _json                                        # noqa: E402
+topic.ensure_topic("probe-timeline", title="timeline 探针", root=TMP)
+TL = "probe-timeline"
+lab.record(TL, "strain", root=TMP, code="T01", role="candidate")
+lab.record(TL, "observe", root=TMP, code="T01", growth="slow", text="慢")
+r3 = lab.record(TL, "measure", root=TMP, code="T01", metric="growth_rate", value=1.2, n=3)
+tl = lab.timeline(TL, root=TMP)
+ck(len(tl) == 3, "timeline 列出全部 3 条事件")
+ck([e["seq"] for e in tl] == [1, 2, 3], "seq 按写入顺序 1/2/3")
+ck(all(e["retracted"] is False for e in tl), "未作废 ⇒ 全 False")
+ck(tl[2]["seq"] == r3["event"]["seq"], "★ timeline 的 seq 与 record 落盘 seq 同源")
+lab.record(TL, "retract", root=TMP, seq=2, reason="记重了")
+tl = lab.timeline(TL, root=TMP)
+ck(len(tl) == 4, "作废本身也是一条追加（共 4 条）")
+ck(tl[1]["retracted"] is True, "★ 被作废的第 2 条标 retracted=True")
+ck(tl[1].get("retract_reason") == "记重了", "★ 作废理由带到视图")
+ck(tl[3]["kind"] == "retract" and tl[3]["retracted"] is False,
+   "作废记录本身不算被作废（否则永远撤不掉）")
+ck(tl[0]["retracted"] is False and tl[2]["retracted"] is False, "其余两条不受影响")
+st = lab.state(TL, root=TMP)
+ck(st["n_retracted"] == 1 and len(st["observes"]) == 0,
+   "★ timeline 的作废与 state 折叠同一口径（不是两套真相）")
+# 负控：老账无 seq ⇒ 按位置推（1 起），不报错、不跳号
+topic.ensure_topic("probe-oldledger", title="老账", root=TMP)
+oldp = lab.lab_path("probe-oldledger", root=TMP)
+with oldp.open("w", encoding="utf-8", newline="\n") as f:
+    f.write(_json.dumps({"kind": "strain", "code": "O01", "at": "2026-11-01 00:00:00"},
+                        ensure_ascii=False) + "\n")
+    f.write(_json.dumps({"kind": "observe", "code": "O01", "growth": "fast",
+                        "at": "2026-11-01 00:01:00"}, ensure_ascii=False) + "\n")
+otl = lab.timeline("probe-oldledger", root=TMP)
+ck([e["seq"] for e in otl] == [1, 2], "★ 老账无 seq ⇒ 按位置 1/2")
+raises(lambda: lab.timeline("no-such-topic", root=TMP),
+       "负控：不存在的课题 ⇒ timeline 报错（与 lab_path 同一条纪律）", "课题不存在")
+
 print()
 print(f"=== {ok_n} 项 / {bad_n} 失败 ===")
 if not bad_n:

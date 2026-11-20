@@ -210,8 +210,8 @@ def _refs_offset(text: str) -> int:
 #   **那比数不出来更糟** —— 用户会以为"50 篇"达标了，而实际只有 18 篇。
 _REF_ENTRY = re.compile(
     r"^(?:"
-    r"[\[［]\s*\d{1,3}\s*[\]］]"                       # [1] / ［1］
-    r"|\d{1,3}\s*[.)）、]\s*(?!\d)"                   # 1. 1) 1、 (后面不是数字)
+    r"[\[［]\s*(\d{1,3})\s*[\]］]"                    # [1] / ［1］（捕获编号）
+    r"|(\d{1,3})\s*[.)）、]\s*(?!\d)"                # 1. 1) 1、 (后面不是数字；捕获编号)
     r"|[-*+]\s+\S"                                    # - 项目符号
     r"|[^\s].{0,80}?[\(（]\s*(?:19|20)\d{2}\s*[\)）]"  # APA: Author (2019).
     r")")
@@ -239,6 +239,53 @@ def _count_ref_entries(refs_block: str) -> int:
         if _REF_ENTRY.match(s):
             n += 1
     return n
+
+
+def citation_structure(text: str) -> dict:
+    """引注 ↔ 文献表的结构性台账（给 eval 测量层用，不参与体检判定）。
+
+    口径单源：引注标记用 `_CITE_NUM` / `_expand_cite_group`，文献表位置用
+    `_refs_offset`，条目用 `_REF_ENTRY` —— 与 writing_lint 同源，不另立正则。
+    返回：
+      has_refs   是否找到文献表
+      body_cites 正文引到的编号（展平、保序去重；**不含文献表条目号**）
+      ay_cites   正文著者-出版年制引注的处数
+      ref_nums   文献表里带编号条目的编号（保序去重）
+      refs_n     条目总数（含无编号条目，与 `_count_ref_entries` 同源）
+    """
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    refs_at = _refs_offset(text)
+    body = text[:refs_at] if refs_at > 0 else text
+    refs_block = text[refs_at:] if refs_at > 0 else ""
+    cited: list[int] = []
+    seen: set[int] = set()
+    for m in _CITE_NUM.finditer(body):
+        for n in _expand_cite_group(m.group(1)):
+            if n not in seen:
+                seen.add(n)
+                cited.append(n)
+    ref_nums: list[int] = []
+    rseen: set[int] = set()
+    for line in refs_block.split("\n"):
+        s = line.strip()
+        if not s or _REFS_LINE.match(s):
+            continue
+        m = _REF_ENTRY.match(s)
+        if not m:
+            continue
+        num = m.group(1) or m.group(2)
+        if num:
+            n = int(num)
+            if n not in rseen:
+                rseen.add(n)
+                ref_nums.append(n)
+    return {
+        "has_refs": refs_at > 0,
+        "body_cites": cited,
+        "ay_cites": len(_CITE_AY.findall(body)),
+        "ref_nums": ref_nums,
+        "refs_n": _count_ref_entries(refs_block),
+    }
 
 
 # ── 中文语境里的半角标点 ────────────────────────────────────

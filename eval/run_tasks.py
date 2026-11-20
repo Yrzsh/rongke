@@ -69,7 +69,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import baseline as B                              # noqa: E402  口径单源
 from rongke.tools import extract_anchors          # noqa: E402
-from rongke.writing import count_chars            # noqa: E402
+from rongke.writing import count_chars, citation_structure  # noqa: E402
 
 PASS, FAIL, NA = "PASS", "FAIL", "NOT AUDITABLE"
 NEGATIVES = HERE / "negatives.jsonl"
@@ -285,6 +285,66 @@ def _c_numeric_anchor(c: dict, f: Fact, ctx: dict) -> tuple[str, str]:
             + (f"；追不到证据的：{miss[:8]}" if miss else "；全部可追"))
 
 
+def _c_citation_precision(c: dict, f: Fact, ctx: dict) -> tuple[str, str]:
+    """正文每个数字制引注都必须落在文献表的真实条目上（结构性精确率）。
+
+    ALCE 口径的 citation precision 语义层（"引用的文献是否真支持这句话"）
+    需要裁判模型，这里**不实现**；实现的是它的可机判前提：号不悬空、
+    不许"有引注却无文献表"。策略取"宁可欠引不可错引" —— 错引是硬 FAIL，
+    没引（欠引）不归这条管。口径全部从 writing.citation_structure 取，
+    本函数不自己数。
+    """
+    if not f.draft.strip():
+        return NA, "无交付正文"
+    st = citation_structure(f.draft)
+    cited = st["body_cites"]
+    if not cited:
+        if st["ay_cites"]:
+            return NA, f"正文用著者-出版年制（{st['ay_cites']} 处），编号解析未实现"
+        return NA, "正文无数字制引注 ⇒ 精确率无从判（欠引由任务契约/召回管）"
+    if not st["has_refs"]:
+        return FAIL, f"正文有 {len(cited)} 个引注编号但无文献表 ⇒ 全部悬空"
+    entries = set(st["ref_nums"])
+    if not entries:
+        return NA, f"文献表 {st['refs_n']} 条但无编号条目 ⇒ [n] 落点无从核对"
+    dangling = sorted(set(cited) - entries)
+    if dangling:
+        return FAIL, (f"引注 {len(cited)} 个编号、文献表 {len(entries)} 条编号条目；"
+                      f"悬空：{dangling[:8]}")
+    return PASS, f"引注 {len(cited)} 个编号全部落在文献表条目上（共 {len(entries)} 条）"
+
+
+def _c_citation_recall(c: dict, f: Fact, ctx: dict) -> tuple[str, str]:
+    """文献表每条编号条目都必须真的被正文引到（结构性召回率）。
+
+    ALCE 口径的 citation recall 语义层（"该被支持的论断是否都给了支持"）
+    同样需要裁判模型；这里实现的是它的可机判前提：**不许凑数条目** ——
+    列进文献表就必须引到（GB/T 7714 顺序编码制的真实要求，也是
+    gate.py「不许为了凑数把没读过的文献塞进文献表」的离线可判形式）。
+    `min` = 最低覆盖率，默认 1.0（每条都必须引到）。
+    """
+    if not f.draft.strip():
+        return NA, "无交付正文"
+    st = citation_structure(f.draft)
+    if not st["has_refs"]:
+        return NA, "无文献表 ⇒ 覆盖率无从判（该不该引由任务契约管）"
+    entries = st["ref_nums"]
+    if not entries:
+        return NA, f"文献表 {st['refs_n']} 条但无编号条目 ⇒ 数字制覆盖率判不了"
+    if not st["body_cites"] and st["ay_cites"]:
+        return NA, "正文用著者-出版年制，无法与编号条目按号匹配"
+    cited = set(st["body_cites"])
+    hit = [n for n in entries if n in cited]
+    uncited = [n for n in entries if n not in cited]
+    ratio = len(hit) / len(entries)
+    need = float(c.get("min", 1.0))
+    head = (f"文献表 {len(entries)} 条编号条目、正文引到 {len(hit)} 条，"
+            f"覆盖率 {ratio:.2f}（要求 ≥{need:.2f}）")
+    if ratio < need:
+        return FAIL, head + (f"；未引（凑数）：{uncited[:8]}" if uncited else "")
+    return PASS, head
+
+
 def _c_content_absent(c: dict, f: Fact, ctx: dict) -> tuple[str, str]:
     """**字面子串，不是正则**（任务 a6 要考的就是别把 DOI 改写成路径）。"""
     needle = str(c.get("contains", ""))
@@ -314,6 +374,8 @@ CHECKS: dict = {
     "gate": _c_gate,
     "file_exists": _c_file_exists,
     "numeric_anchor": _c_numeric_anchor,
+    "citation_precision": _c_citation_precision,
+    "citation_recall": _c_citation_recall,
     "content_absent": _c_content_absent,
     "input_tokens_max": _c_input_tokens_max,
 }
@@ -599,6 +661,8 @@ def self_test(verbose: bool = True) -> int:
         "gate 把「没走到门口」当拦住": lambda c, f, ctx: (PASS, "被抽空"),
         "数值锚点全收": lambda c, f, ctx: (PASS, "被抽空"),
         "file_exists 不看盘": lambda c, f, ctx: (PASS, "被抽空"),
+        "citation_precision 恒真": lambda c, f, ctx: (PASS, "被抽空"),
+        "citation_recall 恒真": lambda c, f, ctx: (PASS, "被抽空"),
     }
     for name, fn in killers.items():
         CHECKS.clear()
@@ -631,7 +695,9 @@ def self_test(verbose: bool = True) -> int:
 _KILL_KEYS = {"chars_range 恒真": "chars_range",
               "gate 把「没走到门口」当拦住": "gate",
               "数值锚点全收": "numeric_anchor",
-              "file_exists 不看盘": "file_exists"}
+              "file_exists 不看盘": "file_exists",
+              "citation_precision 恒真": "citation_precision",
+              "citation_recall 恒真": "citation_recall"}
 
 
 def fn_key(name: str) -> str:

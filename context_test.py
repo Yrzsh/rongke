@@ -24,7 +24,9 @@ import copy
 import dataclasses
 import io
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 if hasattr(sys.stdout, "buffer"):
@@ -214,6 +216,10 @@ check("stub 的 digest == 现在从 ToolCall 重算的 digest",
       stub.split("digest=")[1].split("，")[0], TRACE[0].digest())
 truthy("stub 带锚点：DOI 与 URL 都原样在里面",
        "10.1038/s41586-021-03456-7" in stub and "example.org" in stub)
+# ★ 2026-11-07：_anchors_text 原先取键 "numbers"，而 extract_anchors 输出 "num"
+#   ⇒ 数值锚点在替身里静默缺席。修键后这条必须绿（夹具 LONG 里有 92.4%）。
+truthy("stub 带数值锚点（num=92.4 —— 键名错配曾让它静默缺席）",
+       "num=92.4" in stub, short(stub, 120))
 check("★ 签名层面就不读消息：stub_for 只有一个参数",
       list(__import__("inspect").signature(C.stub_for).parameters), ["tc"])
 truthy("out 里那条 call_1 的替身，开头就是台账现算的 stub",
@@ -305,7 +311,19 @@ from rongke.gate import CompletionClaim                                   # noqa
 
 def verdict_json():
     g = CompletionGate(reg)                    # 每次新建：体检打回额度是**每任务**状态
-    v = g.check(CompletionClaim.from_args(claim_args), contract)
+    # ★ 2026-11-09 判据输入隔离：`gate._check_outline()` 用
+    #   `Path.cwd().rglob("*.md")` 找本场大纲。本测试跑在**项目根**，那里堆着
+    #   历次真跑的 `runs/*/outline.md`；门会把别场大纲当成本场输入，于是
+    #   「台账一改 Verdict 必须变」的承重自检在盘上多出真跑产物后失守。
+    #   产品里 `_run_serial` 已 `os.chdir(ws)`，cwd 就是本次工作区，不存在
+    #   这个问题 —— 所以修测试的输入环境，不是改门、更不是改断言。
+    _cwd = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="context_gate_") as _td:
+        os.chdir(_td)
+        try:
+            v = g.check(CompletionClaim.from_args(claim_args), contract)
+        finally:
+            os.chdir(_cwd)
     return json.dumps(dataclasses.asdict(v), ensure_ascii=False,
                       sort_keys=True, default=str)
 
@@ -740,6 +758,158 @@ check("★ 新口径下 apply(apply(x)) == apply(x)（幂等未破）",
 # 关得掉：keep_live 覆盖全栈时不动（"关"必须关得掉）。
 check("keep_live 覆盖全栈 ⇒ 一步数口径也拦不住，确实不动",
       C.apply(_dm, _dtr, target_chars=0, keep_live=9999)[1]["freed_chars"], 0)
+
+
+# ══════════════════ 14. 溢出兜底接线（防「单测绿、生产没接线」）══════════════════
+# 前 13 节测的都是 `context.apply` / `force_brief` 这两个纯函数。但 2026-10-15
+# 那次真事故恰恰是**函数对、生产没接线**：force_brief 明明把 keep_live_steps
+# 设成 0，loop.py 的 overflow 分支却只调 `_compact("overflow", 0)` ⇒ 走到
+# `apply(..., keep_live=…)`（不传步数 ⇒ 默认 4 步保护）⇒ 密集栈一条压不动、整场作废。
+# 所以这一节读回 `rongke/loop.py` 里 `_loop` 的**生产源码**，钉住那处接线。
+print("\n── 14. 溢出兜底接线（源码级 + 运行时双证据）──")
+import inspect as _inspect                                        # noqa: E402
+from unittest import mock as _mock                                # noqa: E402
+
+_loop_src = _inspect.getsource(L.Rongke._loop)
+_WIRE = '_compact("overflow", 0, keep_live_steps=0)'
+
+
+def _wired(src):
+    """独立判据：定位 overflow 分支那一次 `_compact` 调用，看它是否
+    显式把步数保护放到 0（或改调 force_brief）。基准是这句接线本身，
+    不读任何被测对象的自述 —— 抹掉它就必须当场打红。"""
+    hits = [ln for ln in src.splitlines()
+            if '_compact("overflow"' in ln and not ln.lstrip().startswith("#")]
+    return bool(hits) and any(
+        ("keep_live_steps=0" in ln) or ("force_brief" in ln) for ln in hits)
+
+
+check("★ overflow 分支显式传 keep_live_steps=0（或调 force_brief）",
+      _wired(_loop_src), True)
+check("负控：把接线字符串抹掉后，该判据必须打红",
+      _wired(_loop_src.replace(_WIRE, '_compact("overflow", 0)')), False)
+
+# 运行时证据：overflow 这一次 `context.apply` **真的**收到 keep_live_steps=0，
+# 且 keep_live=4 仍照传（条数下限没丢）；over_target 那次仍**不传**该键
+# （沿用默认步数保护 ⇒ 另外两个触发点逐字未变）。
+_real_apply = C.apply
+
+
+def _spy_run(turns, loop_over):
+    seen = []
+
+    def spy(*a, **kw):
+        seen.append(dict(kw))
+        return _real_apply(*a, **kw)
+
+    k = make_kernel(turns, loop_over=loop_over)
+    with _mock.patch.object(C, "apply", spy):
+        _res, ev = run_loop(k)
+    return seen, _res, ev
+
+
+# 只让 overflow 触发：compact_target_chars=0 ⇒ over_target 的 `if compact_target` 为假；
+# budget_max_prompt_tokens 默认 0 ⇒ token_pressure 不触发。
+_ov14 = ContextOverflow("上下文溢出 —— HTTP 400: context_length_exceeded",
+                        body="context_length_exceeded", code=400)
+_seen_ov, _res_ov, _ev_ov = _spy_run(
+    [_probe, _probe, _probe, _probe, {"raises": _ov14}],
+    {"compact_target_chars": 0, "compact_keep_live": 4})
+truthy("overflow 分支真的走到（否则下面两条 spy 是死检查）",
+       "context_overflow" in [k for k, _ in _ev_ov])
+check("★ 运行时：overflow 那次 apply 收到 keep_live_steps=0（步数保护真放开）",
+      any(c.get("keep_live_steps") == 0 for c in _seen_ov), True)
+check("  同一次调用里 keep_live=4 仍照传（条数下限没丢）",
+      any(c.get("keep_live_steps") == 0 and c.get("keep_live") == 4
+          for c in _seen_ov), True)
+
+# over_target 单独触发：阈值 9k、观测每条 4k ⇒ 必压一次；不注入溢出。
+_seen_ot, _res_ot, _ev_ot = _spy_run(
+    _turns, {"compact_target_chars": 9000, "compact_keep_live": 4})
+truthy("over_target 真的触发过（否则这条是死检查）",
+       any(k == "context_compact" for k, _ in _ev_ot))
+check("★ over_target 那次 apply 不传 keep_live_steps（沿默认，逐字未变）",
+      all("keep_live_steps" not in c for c in _seen_ot), True)
+
+
+# ══════════════════ 15. 记忆写失败必须留痕（不许 except: pass 静默）══════════════════
+print("\n── 15. 记忆写失败留痕 ──")
+import ast as _ast                                                # noqa: E402
+import textwrap as _textwrap                                      # noqa: E402
+import time as _time                                              # noqa: E402
+
+# 直接拿 `_run_serial` 里那段**生产源码**来跑：按 AST 精确抠出
+# `if self.memory and result is not None:` 这一块，单独编译执行。
+# 为什么不在测试里重写一遍逻辑：复制到测试里再测，就是「单测绿、生产没接线」
+# 的老路 —— 这段判据必须打在盘上那份源码本身。全程内存，零盘写、零网络。
+_serial_tree = _ast.parse(_textwrap.dedent(_inspect.getsource(L.Rongke._run_serial)))
+_mem_if = next(n for n in _ast.walk(_serial_tree)
+               if isinstance(n, _ast.If) and "self.memory" in _ast.unparse(n.test))
+_mem_mod = _ast.Module(body=[_mem_if], type_ignores=[])
+_ast.fix_missing_locations(_mem_mod)
+_mem_code = compile(_mem_mod, "<_run_serial:memory_save>", "exec")
+
+
+def _drive(code, mem, *, success=True):
+    """把上面那段生产源码放进受控命名空间跑一次，返回（事件名表, 事件表, result）。"""
+    ev = []
+    ns = {"self": SimpleNamespace(memory=mem),
+          "result": SimpleNamespace(success=success),
+          "goal": "整理成一段正文", "t0": 0.0,
+          "emit": lambda k, d: ev.append((k, d)),
+          "time": _time}
+    exec(code, ns)
+    return [k for k, _ in ev], dict(ev), ns["result"]
+
+
+class _MemOK:
+    def save_run(self, goal, result, elapsed):
+        self.called = True
+
+    def stats(self):
+        return {"runs": 7}
+
+
+class _MemBoom:
+    def save_run(self, goal, result, elapsed):
+        raise RuntimeError("磁盘这会儿写不进去")
+
+    def stats(self):
+        return {"runs": 7}
+
+
+_kn, _evn, _rn = _drive(_mem_code, _MemOK())
+check("成功路径仍发 memory_saved", _kn.count("memory_saved"), 1)
+check("成功路径 result.success 不变", _rn.success, True)
+
+_kb, _evb, _rb = _drive(_mem_code, _MemBoom())
+check("★ save_run 抛异常时发了 memory_save_error（不再 except: pass 静默）",
+      _kb.count("memory_save_error"), 1)
+truthy("error 事件带 type: message（能归因，不是空事件）",
+       "RuntimeError" in str((_evb.get("memory_save_error") or {}).get("error", "")),
+       str(_evb.get("memory_save_error")))
+check("失败路径不发 memory_saved（不把没写成渲染成写成）",
+      _kb.count("memory_saved"), 0)
+check("★ 记忆写失败不改 result.success（任务成败不受记账影响）",
+      _rb.success, True)
+
+# 承重负控：把 except 的 emit 换回旧实现的 `pass`，同一条「事件可见」判据必须打红。
+_bad_if = copy.deepcopy(_mem_if)
+_bad_if.body[0].handlers[0].body = [_ast.parse("pass").body[0]]
+_bad_mod = _ast.Module(body=[_bad_if], type_ignores=[])
+_ast.fix_missing_locations(_bad_mod)
+_bad_code = compile(_bad_mod, "<old:except_pass>", "exec")
+_kbad, _, _ = _drive(_bad_code, _MemBoom())
+check("★ 负控：except 换回 `pass` 后，「事件可见」判据必须打红",
+      _kbad.count("memory_save_error") == 1, False)
+
+# 源码级：留痕事件真的写在 `_run_serial` 里（防止把上面那段抽错函数也全绿）。
+_src_mem = _inspect.getsource(L.Rongke._run_serial)
+check("★ 源码级：_run_serial 的 except 分支真 emit 了 memory_save_error",
+      'emit("memory_save_error"' in _src_mem, True)
+check("  负控：把那句 emit 抹掉后，源码断言必须打红",
+      'emit("memory_save_error"' in _src_mem.replace(
+          'emit("memory_save_error"', 'pass  #'), False)
 
 
 print()

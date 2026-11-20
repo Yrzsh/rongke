@@ -219,6 +219,16 @@ b b,b strong,strong b,strong strong{font-weight:inherit} --fs-sec:var(--fs-xs);
      分隔线 = 同一公式 alpha 0.20。 */
   --cx-secondary:color-mix(in srgb,var(--fg) 60%,var(--bg));
   --cx-rule:color-mix(in srgb,var(--fg) 20%,var(--bg));
+
+  /* 淡色雾蓝主题渐变组（取自用户渐变主图明朗淡蓝端 #7599c0 -> #6486ab -> #557192，底面走纯净白与瓷蓝） */
+  --rk-grad-1:#7599c0;
+  --rk-grad-2:#6486ab;
+  --rk-grad-3:#557192;
+  --rk-grad-4:#414f5a;
+  --rk-theme-grad:linear-gradient(135deg,#7599c0 0%,#6486ab 52%,#557192 100%);
+  --rk-theme-grad-hover:linear-gradient(135deg,#83a5ca 0%,#7192b6 52%,#607c9d 100%);
+  --rk-sidebar-grad:linear-gradient(180deg,#f3f7fb 0%,#eaf0f7 100%);
+  --rk-surface-grad:linear-gradient(135deg,rgba(117,153,192,.09) 0%,rgba(255,255,255,.92) 100%);
 }
 
 /* ★ 方圆形：对全部元素生效（dsh 就是挂在 `*,*:before,:after` 上）。
@@ -297,6 +307,14 @@ b b,b strong,strong b,strong strong{font-weight:inherit} --fs-sec:var(--fs-xs);
   --cx-user-bg-history:color-mix(in srgb,#fff 16%,var(--bg));
   --cx-secondary:color-mix(in srgb,var(--fg) 60%,var(--bg));
   --cx-rule:color-mix(in srgb,var(--fg) 20%,var(--bg));
+  --rk-grad-1:#5b7ea4;
+  --rk-grad-2:#4f6d8e;
+  --rk-grad-3:#3f566e;
+  --rk-grad-4:#28343e;
+  --rk-theme-grad:linear-gradient(135deg,#6f95bd 0%,#58779a 40%,#41576c 75%,#313e4a 100%);
+  --rk-theme-grad-hover:linear-gradient(135deg,#7ea3ca 0%,#6686aa 40%,#4e677e 75%,#3b4956 100%);
+  --rk-sidebar-grad:linear-gradient(155deg,#334960 0%,#293a4d 40%,#1e2b38 75%,#151d24 100%);
+  --rk-surface-grad:linear-gradient(135deg,rgba(117,153,192,.16) 0%,rgba(88,115,148,.10) 50%,rgba(65,79,90,.18) 100%);
   color-scheme:dark;
 }
 *{box-sizing:border-box;margin:0;padding:0}

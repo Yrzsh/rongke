@@ -372,8 +372,23 @@ def _check_draw_signature(template: str) -> str:
     return ""
 
 
-def _load_one(path: Path, ctx: dict) -> LoadResult:
-    """加载单个插件文件，返回结局（绝不抛给调用方）。"""
+_MISSING = object()
+
+
+def _load_one(path: Path, ctx: dict, *,
+              seen_names: dict[str, str] | None = None,
+              dry_run: bool = False,
+              apply_chart_kinds: bool = False) -> tuple[LoadResult, dict[str, dict]]:
+    """加载单个插件文件，返回 `(LoadResult, chart_kinds_meta)`（绝不抛给调用方）。
+
+    三阶段事务（先验后写，失败零污染）：
+      1. 导入与身份核对 —— **先判插件重名**，再做后续任何动作，避免重复插件
+         先改脏 `registry` / `LEGEND_TEMPLATES` 后被判失败。
+      2. 纯校验阶段 —— 校验 `tools()` / `chart_kinds()` / `legend_templates()`，
+         **不写任何外部状态**；`dry_run=True` 时在此返回（零副作用，不调 `on_load`）。
+      3. 提交阶段 —— 写入 `registry` / `LEGEND_TEMPLATES` / `CHART_KINDS` 并调
+         `on_load(ctx)`；任一步失败即**原子回滚**本插件写入的全部条目。
+    """
     res = LoadResult(path=str(path), ok=False)
 
     # 模块名要唯一：两个插件都叫 `plugin.py` 不能互相顶掉
@@ -382,7 +397,7 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
         spec = importlib.util.spec_from_file_location(modname, str(path))
         if spec is None or spec.loader is None:
             res.error = "不是可导入的 Python 文件"
-            return res
+            return res, {}
         mod = importlib.util.module_from_spec(spec)
         # 先注册进 sys.modules：插件内部 `from __future__` 之外的自引用
         # 与 dataclass 装饰器都要求模块在 sys.modules 里，否则会炸。
@@ -394,7 +409,7 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
         # 详细回溯留在 stderr 里，方便开发者自查，但不污染人看的台账
         res.description = traceback.format_exc(limit=3)
         sys.modules.pop(modname, None)
-        return res
+        return res, {}
 
     # 取模块级入口：优先 PLUGIN，其次一个名叫 plugin 的实例
     obj = getattr(mod, "PLUGIN", None)
@@ -406,19 +421,30 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
         res.error = "找不到入口 —— 需要模块级的 PLUGIN 变量"
         res.hint = ("在插件文件末尾写 `PLUGIN = MyPlugin()`，"
                     "或直接 `PLUGIN = MyPlugin`（类也行，会自动实例化）")
-        return res
+        sys.modules.pop(modname, None)
+        return res, {}
     if isinstance(obj, type):
         try:
             obj = obj()
         except Exception as e:                              # noqa: BLE001
             res.error = f"插件类实例化失败：{type(e).__name__}: {e}"
             res.hint = "检查 __init__ 是否需要参数（插件必须能无参构造）"
-            return res
+            sys.modules.pop(modname, None)
+            return res, {}
 
     # ── 身份 ──
     res.name = str(getattr(obj, "name", "") or path.stem)
     res.version = str(getattr(obj, "version", "") or "0.0.0")
     res.description = str(getattr(obj, "description", "") or "")
+
+    # ★ 先判插件重名，再动任何全局/注册表状态：旧实现在 `_load_one` 跑完后才判重名，
+    #   导致重名插件的工具和图注模板已写进系统却未回滚。
+    if seen_names is not None and res.name in seen_names:
+        res.ok = False
+        res.error = f"插件名重名：{res.name} 已被 {seen_names[res.name]} 占用"
+        res.hint = "改一个插件的 name 属性"
+        sys.modules.pop(modname, None)
+        return res, {}
 
     # ── 依赖 ──
     req = getattr(obj, "requires", ()) or ()
@@ -428,17 +454,20 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
     if missing:
         res.error = "缺依赖：" + ", ".join(missing)
         res.hint = _hint_for_missing(missing)
-        return res
+        return res, {}
 
-    # ── 工具 ──
+    # ── 阶段 2：纯校验（零外部副作用） ──
     try:
         got = list(obj.tools() or ())
     except Exception as e:                                  # noqa: BLE001
         res.error = f"tools() 抛错：{type(e).__name__}: {e}"
         res.hint = "tools() 必须返回 Tool 列表，不要在生成过程中做重活"
-        return res
+        return res, {}
 
-    reg = ctx.get("registry")
+    reg = None if dry_run else ctx.get("registry")
+    override = bool(getattr(obj, "override", False))
+    pending_tools: list[Any] = []
+    seen_tool_names: set[str] = set()
     for t in got:
         for attr in ("name", "description", "parameters", "fn"):
             if not hasattr(t, attr):
@@ -454,21 +483,27 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
                 t.source = "plugin"
             except Exception:
                 pass
-            if reg is not None:
-                try:
-                    reg.register(t, overwrite=bool(getattr(obj, "override", False)))
-                except ValueError as e:
-                    res.skipped.append(f"工具 {t.name} 没注册上：{e}")
+            if t.name in seen_tool_names:
+                res.skipped.append(f"工具 {t.name} 在同一插件内重名")
+                continue
+            if reg is not None and not override:
+                existing = reg.get(t.name)
+                if existing is not None:
+                    res.skipped.append(
+                        f"工具 {t.name} 没注册上：工具重名: {t.name}（来自 {existing.source}）")
                     continue
+            seen_tool_names.add(t.name)
+            pending_tools.append(t)
             res.tools.append(t.name)
 
-    # ── 图型 ──
+    # ── 图型校验（保留完整 meta，提交期直接复用，不二次实例化） ──
     try:
         kinds = dict(obj.chart_kinds() or {})
     except Exception as e:                                  # noqa: BLE001
         res.skipped.append(f"chart_kinds() 抛错：{type(e).__name__}: {e}")
         kinds = {}
 
+    valid_kinds: dict[str, dict] = {}
     for k, meta in kinds.items():
         # ★ 必须带 template，否则 recommend() 会推荐一个画不出来的图型。
         #   这是本层最容易造成的"看起来扩展了、实际是空壳"的坑。
@@ -491,34 +526,26 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
                 res.skipped.append(f"图型 {k} 的 {bad_sig}")
                 continue
             res.chart_kinds.append(k)
+            valid_kinds[k] = dict(meta)
 
-    # ── 回调 ──
-    # ★ 图注模板先接线（在 on_load 之前），因为 on_load 可能想覆盖它。
+    # ── 图注模板校验（不写全局） ──
     try:
         lts = dict(obj.legend_templates() or {})
     except Exception as e:                                  # noqa: BLE001
         res.skipped.append(f"legend_templates() 抛错：{type(e).__name__}: {e}")
         lts = {}
-    if lts:
-        try:
-            from . import analysis as _A
-            for jid, tpl in lts.items():
-                if not str(jid or "").strip():
-                    res.skipped.append("图注模板缺期刊名（键不能为空）")
-                    continue
-                if not str(tpl or "").strip():
-                    res.skipped.append(f"图注模板 {jid} 是空的")
-                    continue
-                _A.LEGEND_TEMPLATES[str(jid).strip().lower()] = str(tpl)
-            res.legend_templates = sorted(
-                str(j).strip().lower() for j in lts if str(j).strip())
-        except Exception as e:                              # noqa: BLE001
-            res.skipped.append(f"图注模板没接进 analysis：{type(e).__name__}: {e}")
 
-    try:
-        obj.on_load(ctx)
-    except Exception as e:                                  # noqa: BLE001
-        res.skipped.append(f"on_load 抛错：{type(e).__name__}: {e}")
+    valid_legends: dict[str, str] = {}
+    for jid, tpl in lts.items():
+        key = str(jid or "").strip().lower()
+        if not key:
+            res.skipped.append("图注模板缺期刊名（键不能为空）")
+            continue
+        if not str(tpl or "").strip():
+            res.skipped.append(f"图注模板 {jid} 是空的")
+            continue
+        valid_legends[key] = str(tpl)
+    res.legend_templates = sorted(valid_legends)
 
     # 什么都没产出时也要说清楚 —— 否则"装了但没用"会被误认为成功
     if not res.tools and not res.chart_kinds and not res.legend_templates:
@@ -526,27 +553,112 @@ def _load_one(path: Path, ctx: dict) -> LoadResult:
         res.error = "插件加载了但什么都没产出（没有工具、没有图型、没有图注模板）"
         res.hint = ("确认 tools() / chart_kinds() / legend_templates() "
                     "至少有一个返回了内容")
-        return res
+        return res, {}
 
-    # ★ 部分失败不算成功。插件同时声明了工具和图型时，图型因为缺 template
-    #   被拒，上面那条"至少产出了一样"会给它开绿灯 —— 用户看到一个 ✔，
-    #   以为图型也装上了，实际 recommend() 永远不会推荐它。
-    #   这正是"看起来扩展了、实际是空壳"的那类坑，必须在状态上就说实话。
+    # ★ 部分失败不算成功。此时尚未写任何外部状态，直接返回即可（天然零残留）。
     if res.skipped:
         res.ok = False
         res.error = f"部分条目被拒（{len(res.skipped)} 条），插件未完全生效"
         res.hint = "逐条看下面的 ⚠ 跳过原因；改好后重跑 rongke --plugins"
-        return res
+        return res, {}
+
+    # ★ dry-run 严格零副作用：不注册工具、不写 LEGEND_TEMPLATES / CHART_KINDS、不调 on_load。
+    if dry_run:
+        res.ok = True
+        return res, valid_kinds
+
+    # ── 阶段 3：提交（任一步失败即原子回滚） ──
+    prev_tools: dict[str, Any] = {}
+    prev_legends: dict[str, Any] = {}
+    added_kinds: list[str] = []
+
+    def _rollback() -> None:
+        if reg is not None:
+            for tname, old in prev_tools.items():
+                try:
+                    if old is _MISSING:
+                        reg.unregister(tname)
+                    else:
+                        reg.register(old, overwrite=True)
+                except Exception:                            # noqa: BLE001
+                    pass
+        if prev_legends or added_kinds:
+            try:
+                from . import analysis as _A
+            except Exception:                                # noqa: BLE001
+                return
+            for jkey, old in prev_legends.items():
+                if old is _MISSING:
+                    _A.LEGEND_TEMPLATES.pop(jkey, None)
+                else:
+                    _A.LEGEND_TEMPLATES[jkey] = old
+            for kname in added_kinds:
+                _A.CHART_KINDS.pop(kname, None)
+                _A._BODY.pop(kname, None)
+                _A.PLUGIN_SCOPERS.pop(kname, None)
+
+    if reg is not None:
+        for t in pending_tools:
+            old = reg.get(t.name)
+            try:
+                reg.register(t, overwrite=override)
+            except ValueError as e:
+                res.skipped.append(f"工具 {t.name} 没注册上：{e}")
+                continue
+            prev_tools[t.name] = _MISSING if old is None else old
+        if res.skipped:
+            _rollback()
+            res.ok = False
+            res.error = f"部分条目被拒（{len(res.skipped)} 条），插件未完全生效"
+            res.hint = "逐条看下面的 ⚠ 跳过原因；改好后重跑 rongke --plugins"
+            return res, {}
+
+    # ★ 图注模板先接线（在 on_load 之前），因为 on_load 可能想覆盖它。
+    if valid_legends:
+        try:
+            from . import analysis as _A
+            for jkey, tpl in valid_legends.items():
+                prev_legends[jkey] = _A.LEGEND_TEMPLATES.get(jkey, _MISSING)
+                _A.LEGEND_TEMPLATES[jkey] = tpl
+        except Exception as e:                              # noqa: BLE001
+            res.skipped.append(f"图注模板没接进 analysis：{type(e).__name__}: {e}")
+            _rollback()
+            res.ok = False
+            res.error = f"部分条目被拒（{len(res.skipped)} 条），插件未完全生效"
+            res.hint = "逐条看下面的 ⚠ 跳过原因；改好后重跑 rongke --plugins"
+            return res, {}
+
+    if apply_chart_kinds and valid_kinds:
+        _apply_kinds(path, res, meta_map=valid_kinds, added_out=added_kinds)
+        if res.skipped:
+            _rollback()
+            res.ok = False
+            res.error = f"部分条目被拒（{len(res.skipped)} 条），插件未完全生效"
+            res.hint = "逐条看下面的 ⚠ 跳过原因；改好后重跑 rongke --plugins"
+            return res, {}
+
+    try:
+        obj.on_load(ctx)
+    except Exception as e:                                  # noqa: BLE001
+        res.skipped.append(f"on_load 抛错：{type(e).__name__}: {e}")
+        _rollback()
+        res.ok = False
+        res.error = f"部分条目被拒（{len(res.skipped)} 条），插件未完全生效"
+        res.hint = "逐条看下面的 ⚠ 跳过原因；改好后重跑 rongke --plugins"
+        return res, {}
 
     res.ok = True
-    return res
+    return res, valid_kinds
 
 
 def load_plugins(registry=None, *, dirs: list[Path] | None = None,
-                 cfg=None, apply_chart_kinds: bool = True) -> LoadReport:
+                 cfg=None, apply_chart_kinds: bool = True,
+                 dry_run: bool | None = None) -> LoadReport:
     """扫描并加载全部插件。
 
-    `registry` 给了就把工具注册进去；不给就只做校验（dry-run）。
+    `registry` 给了就把工具注册进去；`registry is None and not apply_chart_kinds`
+    默认进入**严格零副作用 dry-run**（不写 `LEGEND_TEMPLATES`、不调 `on_load`）。
+    需要不传 `registry` 且仍写入图注模板时显式传 `dry_run=False`。
     `apply_chart_kinds` 为真时把图型登记进 `analysis.CHART_KINDS`/`_BODY`。
 
     **不抛异常**：任何单个插件的失败都变成一条 `LoadResult`。
@@ -555,34 +667,36 @@ def load_plugins(registry=None, *, dirs: list[Path] | None = None,
     report = LoadReport()
     from .config import data_root as _dr
     ctx: dict[str, Any] = {"registry": registry, "data_root": _dr()}
+    is_dry = ((registry is None and not apply_chart_kinds)
+              if dry_run is None else bool(dry_run))
 
     files = discover(dirs if dirs is not None else plugin_dirs(cfg))
     report.scanned = len(files)
 
     seen_names: dict[str, str] = {}
     for f in files:
-        res = _load_one(f, ctx)
-        # 插件重名：后加载的跳过（不让一个插件悄悄顶掉另一个）
-        if res.ok and res.name in seen_names:
-            res.ok = False
-            res.error = f"插件名重名：{res.name} 已被 {seen_names[res.name]} 占用"
-            res.hint = "改一个插件的 name 属性"
-        elif res.ok:
+        res, _meta_map = _load_one(
+            f, ctx,
+            seen_names=seen_names,
+            dry_run=is_dry,
+            apply_chart_kinds=bool(apply_chart_kinds) and not is_dry,
+        )
+        if res.ok:
             seen_names[res.name] = str(f)
-
-        if res.ok and apply_chart_kinds and res.chart_kinds:
-            _apply_kinds(f, res)
         report.results.append(res)
 
     return report
 
 
-def _apply_kinds(path: Path, res: LoadResult) -> None:
+def _apply_kinds(path: Path, res: LoadResult,
+                 meta_map: dict[str, dict] | None = None,
+                 added_out: list[str] | None = None) -> None:
     """把插件图型真正接进 analysis 的登记表与模板表。
 
     ★ 两处必须同时写：`CHART_KINDS`（建议器读它）与 `_BODY`（生成脚本读它）。
       只写前者 ⇒ recommend() 会建议一个 build_script() 找不到模板的图型，
       结果是"建议了但画不出来"。
+    ★ `meta_map` 由 `_load_one` 直接传入，不再扫 `sys.modules` 重新实例化插件类。
     """
     try:
         from . import analysis as A
@@ -590,30 +704,13 @@ def _apply_kinds(path: Path, res: LoadResult) -> None:
         res.skipped.append(f"图型没能接进 analysis：{e}")
         return
 
-    # 重新加载这个插件拿到 meta（_load_one 只留了键名）
-    # 避免二次 exec：从已注册的模块里取。模块名规则与 _load_one 一致。
-    meta_map: dict[str, dict] = {}
-    for modname, m in list(sys.modules.items()):
-        if not modname.startswith("rongke_plugin_"):
-            continue
-        obj = getattr(m, "PLUGIN", None)
-        if obj is None:
-            continue
-        if isinstance(obj, type):
-            try:
-                obj = obj()
-            except Exception:
-                continue
-        try:
-            got = dict(obj.chart_kinds() or {})
-        except Exception:
-            continue
-        if str(getattr(obj, "name", "") or "") == res.name:
-            meta_map = got
-            break
+    kinds_data: dict[str, dict] = dict(meta_map or {})
+    if not kinds_data:
+        res.skipped.append("图型元数据为空，未接入 analysis")
+        return
 
     for k in res.chart_kinds:
-        meta = meta_map.get(k) or {}
+        meta = kinds_data.get(k) or {}
         if not meta:
             res.skipped.append(f"图型 {k} 的元数据在接入时丢了")
             continue
@@ -626,6 +723,8 @@ def _apply_kinds(path: Path, res: LoadResult) -> None:
             "needs": str(meta["needs"]),
         }
         A._BODY[k] = str(meta["template"])
+        if added_out is not None:
+            added_out.append(k)
 
         # ★ 适用条件（可选）：没有它，这个图型**永远不会被自动建议** ——
         #   recommend() 的内置判据是硬编码的，不认识插件图型。

@@ -307,6 +307,14 @@ def read_secret(name: str) -> str:
     return str(data.get(name) or "").strip()
 
 
+def _normalize_base_url(url: Any) -> str:
+    """规范化服务端点 URL：去首尾空白与末尾斜杠，并剥掉误贴进来的 `/chat/completions`。"""
+    s = str(url or "").strip().rstrip("/")
+    if s.lower().endswith("/chat/completions") and len(s) > len("/chat/completions"):
+        s = s[:-len("/chat/completions")].rstrip("/")
+    return s
+
+
 @dataclass
 class Provider:
     name: str
@@ -550,7 +558,7 @@ class Config:
         pv = data["provider"]
         provider = Provider(
             name=str(pv.get("name", "commandcode")),
-            base_url=str(pv.get("base_url", "")).rstrip("/"),
+            base_url=_normalize_base_url(pv.get("base_url", "")),
             model=str(pv.get("model", "")),
             api_key_env=str(pv.get("api_key_env", "COMMANDCODE_API_KEY")),
             reasoning_effort=str(pv.get("reasoning_effort", "medium")),
@@ -809,6 +817,7 @@ def save_provider_overrides(updates: dict[str, Any],
 
     merged = _deep_merge(existing, {"provider": clean})
     text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + f".tmp-{uuid.uuid4().hex[:8]}")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, target)                # 同目录 rename：要么旧的、要么新的
@@ -863,4 +872,122 @@ def save_secret(name: str, value: str, *, path: Path | None = None) -> dict[str,
     os.replace(tmp, target)
     return {"path": str(target), "name": name, "chars": len(value),
             "cleared": not bool(value)}
+
+
+def reset_provider_overrides(root: Path | None = None) -> dict[str, Any]:
+    """移除项目级 `config.json` 里的自定义 `provider` 段，恢复到用户级/内置默认。"""
+    root = root or data_root()
+    target = root / "config.json"
+    existing = _read_json(target)
+    if not isinstance(existing, dict) or not existing.get("provider"):
+        return {"path": str(target), "backup": "", "removed": [], "changed": False}
+    prev = existing.get("provider")
+    removed = sorted(prev.keys()) if isinstance(prev, dict) else ["provider"]
+    stamp = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    bak = target.with_name(target.name + ".bak_" + stamp)
+    bak.write_bytes(target.read_bytes())
+    cleaned = dict(existing)
+    cleaned.pop("provider", None)
+    text = json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + f".tmp-{uuid.uuid4().hex[:8]}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+    return {"path": str(target), "backup": str(bak), "removed": removed, "changed": True}
+
+
+def api_profiles_path() -> Path:
+    """已保存的命名 API 方案文件（家目录下，不含密钥值本身）。"""
+    return Path.home() / ".rongke" / "api_profiles.json"
+
+
+def _read_api_profiles(path: Path | None = None) -> list[dict[str, Any]]:
+    target = path or api_profiles_path()
+    if not target.exists():
+        return []
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("profiles"), list):
+        return []
+    return [dict(x) for x in raw["profiles"] if isinstance(x, dict) and str(x.get("id") or "").strip()]
+
+
+def list_api_profiles(path: Path | None = None) -> list[dict[str, Any]]:
+    """列出已保存的 API 方案（供设置页快速切换或删除）。"""
+    out: list[dict[str, Any]] = []
+    for item in _read_api_profiles(path):
+        pid = str(item.get("id") or "").strip()
+        if not pid:
+            continue
+        env_name = str(item.get("api_key_env") or DEFAULTS["provider"]["api_key_env"]).strip()
+        out.append({
+            "id": pid,
+            "name": str(item.get("name") or pid).strip(),
+            "model": str(item.get("model") or "").strip(),
+            "base_url": _normalize_base_url(item.get("base_url") or ""),
+            "api_key_env": env_name,
+            "reasoning_effort": str(item.get("reasoning_effort") or "high").strip(),
+            "send_reasoning_effort": bool(item.get("send_reasoning_effort", True)),
+            "max_tokens": int(item.get("max_tokens") or DEFAULTS["provider"]["max_tokens"]),
+            "stream_required": bool(item.get("stream_required", False)),
+            "updated_at": str(item.get("updated_at") or "").strip(),
+            "key_present": bool(read_secret(env_name)) if env_name else False,
+        })
+    return out
+
+
+def save_api_profile(profile: dict[str, Any], *, path: Path | None = None) -> dict[str, Any]:
+    """保存或更新一个命名 API 方案（绝不把密钥明文写进方案文件）。"""
+    name = str(profile.get("name") or "").strip()
+    if not name:
+        raise ValueError("请填写 API 方案名称")
+    model = str(profile.get("model") or "").strip()
+    base_url = _normalize_base_url(profile.get("base_url") or "")
+    if not model or not base_url:
+        raise ValueError("保存 API 方案需要填写模型名与服务端点 base_url")
+    pid = str(profile.get("id") or "").strip()
+    if not pid:
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-").lower()
+        pid = (slug[:32] + "-" if slug else "api-") + uuid.uuid4().hex[:6]
+    entry = {
+        "id": pid,
+        "name": name[:64],
+        "model": model,
+        "base_url": base_url,
+        "api_key_env": str(profile.get("api_key_env") or DEFAULTS["provider"]["api_key_env"]).strip(),
+        "reasoning_effort": str(profile.get("reasoning_effort") or "high").strip(),
+        "send_reasoning_effort": bool(profile.get("send_reasoning_effort", True)),
+        "max_tokens": int(profile.get("max_tokens") or DEFAULTS["provider"]["max_tokens"]),
+        "stream_required": bool(profile.get("stream_required", False)),
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    target = path or api_profiles_path()
+    profiles = [p for p in _read_api_profiles(target) if str(p.get("id") or "") != pid]
+    profiles.insert(0, entry)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2) + "\n"
+    tmp = target.with_name(target.name + f".tmp-{uuid.uuid4().hex[:8]}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+    return {"ok": True, "profile": entry, "profiles": list_api_profiles(target), "path": str(target)}
+
+
+def delete_api_profile(profile_id: str, *, path: Path | None = None) -> dict[str, Any]:
+    """从已保存的 API 方案清单中删除指定方案。"""
+    pid = str(profile_id or "").strip()
+    if not pid:
+        raise ValueError("缺少要删除的方案编号")
+    target = path or api_profiles_path()
+    before = _read_api_profiles(target)
+    after = [p for p in before if str(p.get("id") or "") != pid]
+    if len(after) == len(before):
+        return {"ok": False, "error": f"API 方案不存在：{pid}", "profiles": list_api_profiles(target)}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps({"profiles": after}, ensure_ascii=False, indent=2) + "\n"
+    tmp = target.with_name(target.name + f".tmp-{uuid.uuid4().hex[:8]}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+    return {"ok": True, "deleted": pid, "profiles": list_api_profiles(target), "path": str(target)}
 

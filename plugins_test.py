@@ -689,7 +689,10 @@ def test_legend_template_override():
     d = Path(tempfile.mkdtemp())
     try:
         _write(d, "lg.py", LEGEND_PLUGIN.format(root=str(ROOT)))
-        rep = load_plugins(dirs=[d], apply_chart_kinds=False)
+        # ★ 2026-11-20 口径升级：registry=None + apply_chart_kinds=False 现为严格
+        #   零副作用 dry-run（cli.py --plugins 用）；本条测真实写入 LEGEND_TEMPLATES，
+        #   故显式传 dry_run=False。
+        rep = load_plugins(dirs=[d], apply_chart_kinds=False, dry_run=False)
         if not rep.ok:
             bad(f"图注模板插件没加载成：{rep.summary()}")
             for r in rep.results:
@@ -741,7 +744,7 @@ def test_broken_legend_template_falls_back():
     d = Path(tempfile.mkdtemp())
     try:
         _write(d, "lgb.py", LEGEND_BADTPL.format(root=str(ROOT)))
-        rep = load_plugins(dirs=[d], apply_chart_kinds=False)
+        rep = load_plugins(dirs=[d], apply_chart_kinds=False, dry_run=False)
         if rep.ok:
             ok("槽名写错的插件仍能装上（图注是软失败，不该拒绝整个插件）")
         cd = {"figure_id": "Fig. 3", "title": "X", "journal": "badjournal",
@@ -754,6 +757,191 @@ def test_broken_legend_template_falls_back():
     finally:
         shutil.rmtree(d, ignore_errors=True)
         A.LEGEND_TEMPLATES.pop("badjournal", None)
+
+
+def test_dry_run_has_zero_side_effects():
+    """dry-run（registry=None 且 apply_chart_kinds=False）绝不写全局或调 on_load。"""
+    from rongke.plugins import load_plugins
+    from rongke import analysis as A
+
+    d = Path(tempfile.mkdtemp())
+    marker = d / "on_load_ran.txt"
+    try:
+        _write(d, "dry.py", f'''
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(ROOT)!r})
+from rongke.plugins import Plugin
+from rongke.tools import Tool
+
+class P(Plugin):
+    name = "dry-check"
+    version = "0.1.0"
+
+    def tools(self):
+        yield Tool(name="dry_tool", description="只校验不注册",
+                   parameters={{"type": "object", "properties": {{}}}},
+                   fn=lambda: "ok")
+
+    def legend_templates(self):
+        return {{"dryjournal": "Fig. {{fig_id}} | **{{title}}**"}}
+
+    def on_load(self, ctx):
+        Path({str(marker)!r}).write_text("ran", encoding="utf-8")
+
+PLUGIN = P
+''')
+        rep = load_plugins(None, dirs=[d], apply_chart_kinds=False)
+        if len(rep.ok) == 1 and rep.ok[0].legend_templates == ["dryjournal"]:
+            ok("dry-run 校验通过且如实报告 legend_templates")
+        else:
+            bad(f"dry-run 校验异常：{rep.summary()}")
+        if "dryjournal" not in A.LEGEND_TEMPLATES:
+            ok("dry-run 没有污染 analysis.LEGEND_TEMPLATES")
+        else:
+            bad("dry-run 竟然写入了 LEGEND_TEMPLATES")
+        if not marker.exists():
+            ok("dry-run 没有调用 on_load()")
+        else:
+            bad("dry-run 竟然执行了 on_load()")
+    finally:
+        A.LEGEND_TEMPLATES.pop("dryjournal", None)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_duplicate_name_and_onload_failure_rollback():
+    """重名插件在写入前即被拒；on_load 抛错原子回滚工具与图注模板。"""
+    from rongke.plugins import load_plugins
+    from rongke.tools import ToolRegistry
+    from rongke import analysis as A
+
+    d = Path(tempfile.mkdtemp())
+    try:
+        _write(d, "01_first.py", f'''
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+from rongke.plugins import Plugin
+from rongke.tools import Tool
+
+class P(Plugin):
+    name = "dup-name"
+    version = "1.0.0"
+    def tools(self):
+        yield Tool(name="first_tool", description="先到的工具",
+                   parameters={{"type": "object", "properties": {{}}}},
+                   fn=lambda: "first")
+    def legend_templates(self):
+        return {{"dupjournal": "FIRST {{fig_id}}"}}
+PLUGIN = P
+''')
+        _write(d, "02_second.py", f'''
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+from rongke.plugins import Plugin
+from rongke.tools import Tool
+
+class P(Plugin):
+    name = "dup-name"
+    version = "2.0.0"
+    def tools(self):
+        yield Tool(name="second_leaked_tool", description="不该注册的工具",
+                   parameters={{"type": "object", "properties": {{}}}},
+                   fn=lambda: "second")
+    def legend_templates(self):
+        return {{"dupjournal": "SECOND {{fig_id}}", "secondjournal": "LEAK"}}
+PLUGIN = P
+''')
+        _write(d, "03_boom_onload.py", f'''
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+from rongke.plugins import Plugin
+from rongke.tools import Tool
+
+class P(Plugin):
+    name = "boom-onload"
+    version = "0.1.0"
+    def tools(self):
+        yield Tool(name="boom_leaked_tool", description="on_load 炸了应回滚",
+                   parameters={{"type": "object", "properties": {{}}}},
+                   fn=lambda: "boom")
+    def legend_templates(self):
+        return {{"boomjournal": "BOOM"}}
+    def on_load(self, ctx):
+        raise RuntimeError("init failed")
+PLUGIN = P
+''')
+        reg = ToolRegistry()
+        rep = load_plugins(reg, dirs=[d], apply_chart_kinds=True)
+        eq(len(rep.ok), 1, "三个插件里只有第一个成功")
+        eq(len(rep.failed), 2, "重名与 on_load 失败均判失败")
+        if reg.get("first_tool") is not None and reg.get("second_leaked_tool") is None:
+            ok("重名插件未向 registry 泄漏工具")
+        else:
+            bad(f"重名插件污染了 registry：{reg.names()}")
+        if A.LEGEND_TEMPLATES.get("dupjournal") == "FIRST {fig_id}" and "secondjournal" not in A.LEGEND_TEMPLATES:
+            ok("重名插件未覆盖/污染 LEGEND_TEMPLATES")
+        else:
+            bad(f"重名插件污染了 LEGEND_TEMPLATES：{A.LEGEND_TEMPLATES}")
+        if reg.get("boom_leaked_tool") is None and "boomjournal" not in A.LEGEND_TEMPLATES:
+            ok("on_load 抛错后工具与图注模板已原子回滚")
+        else:
+            bad("on_load 抛错后存在状态泄漏")
+    finally:
+        for k in ("dupjournal", "secondjournal", "boomjournal"):
+            A.LEGEND_TEMPLATES.pop(k, None)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_chart_kinds_not_reinstantiated():
+    """_apply_kinds 直接复用 _load_one 返回的元数据，不二次实例化插件类。"""
+    from rongke.plugins import load_plugins
+    from rongke.tools import ToolRegistry
+    from rongke import analysis as A
+
+    d = Path(tempfile.mkdtemp())
+    counter_file = d / "counts.txt"
+    try:
+        _write(d, "once.py", f'''
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(ROOT)!r})
+from rongke.plugins import Plugin
+
+_CF = Path({str(counter_file)!r})
+
+def _bump(tag):
+    cur = _CF.read_text(encoding="utf-8") if _CF.exists() else ""
+    _CF.write_text(cur + tag + "\\n", encoding="utf-8")
+
+class P(Plugin):
+    name = "single-inst"
+    version = "0.1.0"
+    def __init__(self):
+        _bump("init")
+    def chart_kinds(self):
+        _bump("kinds")
+        return {{"single_inst_kind": {{
+            "family": "test", "name": "单次实例化图型", "needs": "任意",
+            "template": "def draw(df):\\n    return None\\n",
+        }}}}
+
+PLUGIN = P
+''')
+        reg = ToolRegistry()
+        rep = load_plugins(reg, dirs=[d], apply_chart_kinds=True)
+        eq(len(rep.ok), 1, "单次实例化插件加载成功")
+        tags = counter_file.read_text(encoding="utf-8").splitlines()
+        eq(tags.count("init"), 1, "插件类仅实例化 1 次")
+        eq(tags.count("kinds"), 1, "chart_kinds() 仅调用 1 次")
+        if "single_inst_kind" in A.CHART_KINDS and "single_inst_kind" in A._BODY:
+            ok("单次实例化图型正确写入 CHART_KINDS 与 _BODY")
+        else:
+            bad("单次实例化图型未写入 analysis")
+    finally:
+        A.CHART_KINDS.pop("single_inst_kind", None)
+        A._BODY.pop("single_inst_kind", None)
+        A.PLUGIN_SCOPERS.pop("single_inst_kind", None)
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -793,6 +981,12 @@ if __name__ == "__main__":
     test_legend_template_override()
     print("\n=== [18] 坏模板退回内置草稿 ===")
     test_broken_legend_template_falls_back()
+    print("\n=== [19] dry-run 严格零副作用 ===")
+    test_dry_run_has_zero_side_effects()
+    print("\n=== [20] 重名与 on_load 失败原子回滚 ===")
+    test_duplicate_name_and_onload_failure_rollback()
+    print("\n=== [21] 图型接入不二次实例化 ===")
+    test_chart_kinds_not_reinstantiated()
     print()
     if _fail:
         print(f"✘ 失败 {_fail} 项")

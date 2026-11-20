@@ -83,10 +83,22 @@ $PY eval/ablate_skill_gate.py --sweep --reps 6 --yes
    认领到的 33 条 check **全绿**。全绿不是成绩 —— 因为可认领的只有两个最简单的写作任务。
 2. `chars-blindspot` 这条负控显出仪器的边界：**一份通篇套话的稿子在字数判据上满分**。
    要测"写得好不好"得上 citation precision/recall，不是再加几条正则。
+   **2026-11-07 进展**：结构性两层已进执行器（`citation_precision` / `citation_recall`，
+   口径单源于 `writing.citation_structure`）——精确率判"每个 [n] 落在文献表真实条目上"
+   （悬空/有引注无表 ⇒ FAIL），召回率判"文献表每条都被正文引到"（凑数条目 ⇒ FAIL，
+   `min` 覆盖率可配）。**语义层不实现**："这条引用是否真支持这句话"需要裁判模型，
+   `prec-blindspot` / `rec-blindspot` 两条盲区负控把这条边界钉住（套话配真引用照样 PASS，
+   那不是质量成绩）。著者-出版年制 ⇒ NA「未实现」，不滑成 PASS。
+   尚未接进 `tasks.jsonl`（动任务集就是动分母），四臂重跑待批。
 3. ★ 撞到上游缺陷：`tools.py:45` 的 `_RE_NUM` 带 `(?<![\w.])`，而**汉字算 `\w`** ⇒
    中文里紧贴汉字的数值一个都抽不到（`温度为47.3%、样本1280株` → 锚点为空）。
    后果是 `numeric_anchor` 在真实中文稿上会**虚判**（看着核过了，其实什么都没核）。
-   修法在采集器不在执行器，已用 `num-na-glued` 这条 known-defect 钉住，防止被"顺手放宽"埋掉。
+   **2026-11-07 已修**：守卫收窄为 ASCII 字母数字下划线，汉字紧贴可收；
+   尾部加 `(?!\.\d)(?!,\d{3})` 防截断（放开后 `99.9h` 会回溯成假锚点 `99`，自检当场抓到）。
+   `num-na-glued` 从 known-defect 转为真负控（1280 追不到源 ⇒ FAIL），
+   新增 `num-glued-good` 正控与 `num-unit-blindspot` 边界（紧贴 ASCII 单位的数仍不收，
+   要收得先有单位白名单）。同路修了 `context._anchors_text` 取键 `"numbers"` 而采集器
+   输出 `"num"` 的错配 —— 替身里的数值锚点此前静默缺席。
 
 
 ## 三条口径（写死在 `baseline.py` 顶部常量里）

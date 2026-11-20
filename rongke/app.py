@@ -438,18 +438,33 @@ def find_browser() -> str:
     return ""
 
 
+def _ps_exe() -> str | None:
+    """找一个能用的 PowerShell：5.1 的 powershell.exe → 7 的 pwwsh。都没有就 None。
+
+    只装了 PowerShell 7 的机器上，写死 `powershell.exe` 会直接抛
+    FileNotFoundError（2026-11-14 回归撞到两次：desktop_dir / _profile_pids）。
+    """
+    for exe in ("powershell.exe", "pwsh.exe", "pwsh"):
+        if shutil.which(exe):
+            return exe
+    return None
+
+
 def _profile_pids(profile: Path) -> list[int]:
     """正在用我们这个 profile 的浏览器**主进程**。
 
     为什么不按进程名杀：所有 Edge 窗口都叫 msedge.exe，按名字杀会连用户自己的
     浏览器一起杀掉。只有命令行里带着我们这个 profile 目录的才是荣珂的窗口。
     """
+    exe = _ps_exe()
+    if not exe:
+        return []
     ps = ("$p='" + str(profile) + "';"
           "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
           "Where-Object { $_.CommandLine -like ('*' + $p + '*') "
           "-and $_.CommandLine -notlike '*--type=*' } | "
           "ForEach-Object { $_.ProcessId }")
-    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
+    r = subprocess.run([exe, "-NoProfile", "-Command", ps],
                        capture_output=True, text=True, creationflags=_NO_WINDOW)
     return [int(x) for x in (r.stdout or "").split() if x.isdigit()]
 
@@ -540,14 +555,27 @@ def pythonw() -> str:
 
 
 def desktop_dir() -> Path:
-    """问系统要桌面，别拼路径 —— 桌面目录可能被系统重定向到别的盘。"""
-    out = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command",
-         "[Environment]::GetFolderPath('Desktop')"],
-        capture_output=True, text=True, creationflags=_NO_WINDOW)
-    got = (out.stdout or "").strip()
-    return Path(got) if out.returncode == 0 and got and Path(got).is_dir() \
-        else Path.home()
+    """问系统要桌面，别拼路径 —— 桌面目录可能被系统重定向到别的盘。
+
+    `powershell.exe`（Windows PowerShell 5.1）不是每台机都有：只装了 PowerShell 7
+    的机器上找它直接抛 FileNotFoundError（2026-11-14 回归里撞到）。统一走
+    `_ps_exe()` 探一个能用的；一个都没有就退回用户目录，不崩。
+    """
+    exe = _ps_exe()
+    if exe:
+        try:
+            out = subprocess.run(
+                [exe, "-NoProfile", "-Command",
+                 "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+                 "[Environment]::GetFolderPath('Desktop')"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", creationflags=_NO_WINDOW)
+            got = (out.stdout or "").strip()
+            if out.returncode == 0 and got and Path(got).is_dir():
+                return Path(got)
+        except (FileNotFoundError, OSError):
+            pass
+    return Path.home()
 
 
 def install_shortcut(port: int) -> tuple[Path, bool]:
@@ -578,7 +606,11 @@ def install_shortcut(port: int) -> tuple[Path, bool]:
           "$s.TargetPath=$env:RK_EXE;$s.Arguments=$env:RK_ARGS;"
           "$s.WorkingDirectory=$env:RK_CWD;$s.IconLocation=$env:RK_ICON;"
           "$s.Description=$env:RK_DESC;$s.WindowStyle=1;$s.Save()")
-    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
+    exe = _ps_exe()
+    if not exe:
+        raise RuntimeError("这台机上手边没有 PowerShell（powershell.exe / pwsh 都没有），"
+                           "建不了桌面快捷方式；控制台可以直接用 `rongke serve` 打开。")
+    r = subprocess.run([exe, "-NoProfile", "-Command", ps],
                        env=env, capture_output=True, text=True,
                        creationflags=_NO_WINDOW)
     if r.returncode != 0:

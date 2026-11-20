@@ -99,6 +99,44 @@ def main() -> int:
         reset_external_loader()
         check("移走坏件后恢复干净", caps.ensure_external_loaded() == [])
 
+        # ②c 半途注册失败 ⇒ 必须原子回滚（2026-11-14 实测真红）
+        # 旧实现：exec 到一半 @register 成功、随后同名注册抛 ValueError；
+        # 异常被吞，名字却留在 _REGISTRY —— 本次进不了 _EXTERNAL_NAMES
+        # ⇒ 常驻能力静默丢失（resolve 还看得到，更有迷惑性），
+        # 且文件修好后重扫仍撞「重复注册」，永远起不来。
+        half = ("from rongke.caps import Capability, register\n"
+                "@register('@external/half-leak')\n"
+                "class A(Capability):\n"
+                "    kind = 'tool'\n"
+                "    ALWAYS_ON = True\n"
+                "    ESSENTIAL_TOOLS = ('half_tool',)\n"
+                "@register('@external/half-leak')\n"
+                "class B(Capability):\n"
+                "    kind = 'tool'\n")
+        good = half[:half.index("@register('@external/half-leak')\nclass B")]
+        os.environ["RONGKE_CAP_EXT"] = str(d)
+        (d / "half.py").write_text(half, encoding="utf-8")
+        reset_external_loader()
+        bad2 = caps.ensure_external_loaded()
+        check("半途失败的 .py 被记账（不静默）",
+              any("half.py" in e["file"] for e in bad2), str(bad2))
+        check("半途失败不留下半个注册名",
+              caps.resolve("@external/half-leak") is None)
+        check("失败回执明说回滚了哪些名字",
+              any(e.get("rolled_back") == ["@external/half-leak"] for e in bad2),
+              str(bad2))
+        (d / "half.py").write_text(good, encoding="utf-8")
+        reset_external_loader()
+        errs3 = caps.ensure_external_loaded()
+        check("文件修好后重扫：错误清零", errs3 == [], str(errs3))
+        check("文件修好后常驻能力真的回来（不是 resolve 得到就算）",
+              "@external/half-leak" in caps.always_on_capabilities()
+              and caps.resolve("@external/half-leak") is not None,
+              str(caps.always_on_capabilities()))
+        (d / "half.py").unlink()
+        os.environ.pop("RONGKE_CAP_EXT", None)
+        reset_external_loader()
+
     print("== ②b 工具型长处（别的 agent 的主流形态）也能零改内核 ==")
     with tempfile.TemporaryDirectory() as td2:
         d2 = pathlib.Path(td2)

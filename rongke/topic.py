@@ -43,6 +43,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -182,12 +184,43 @@ def list_topics(root=None) -> list[dict]:
     if not base.exists():
         return out
     for c in sorted(base.iterdir()):
-        if not c.is_dir():
+        if not c.is_dir() or c.name.startswith("_") or c.name == "advisors":
             continue
         m = read_topic(c.name, root=root)
         if m:
             out.append(m)
     return out
+
+
+def delete_topic(slug: str, root=None, *, confirm: bool = False) -> dict:
+    """软删除课题（只移入 `topics/_deleted/`，遵循零删除铁律，支持事后找回）。"""
+    if not confirm:
+        return {"ok": False, "error": "删除课题需要 confirm=True 确认"}
+    slug_s = str(slug or "").strip()
+    if not valid_slug(slug_s) or slug_s.startswith("_") or slug_s == "advisors":
+        return {"ok": False, "error": f"非法的课题名：{slug!r}"}
+    d = _topic_dir(slug_s, root)
+    if d is None or not (d / "topic.json").is_file():
+        return {"ok": False, "error": f"课题不存在：{slug_s}"}
+    base = topics_root(root)
+    was_current = (current(root) == slug_s)
+    trash_dir = base / "_deleted"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    dest = trash_dir / f"{slug_s}_{stamp}"
+    shutil.move(str(d), str(dest))
+    if was_current:
+        cur_file = base / "CURRENT"
+        tmp = cur_file.with_suffix(".tmp")
+        tmp.write_text("", encoding="utf-8", newline="\n")
+        os.replace(tmp, cur_file)
+    return {
+        "ok": True,
+        "slug": slug_s,
+        "moved_to": str(dest),
+        "was_current": was_current,
+        "current": current(root),
+    }
 
 
 def ensure_topic(slug: str, title: str = "", question: str = "", root=None) -> dict:

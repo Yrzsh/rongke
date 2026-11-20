@@ -117,6 +117,10 @@ class FakeContract:
     # ★ W36：收尾处按 `needs_writing` 决定发不发任务单（写稿才发）。
     #   真契约总有这个字段 —— 夹具补上，否则这条分流在这里永远测不到。
     needs_writing = False
+    # 第 8 步会发「目标重申」（`_reminder`），真契约这两个字段恒在。
+    # §6 的脚本加长到 9 步后必须补上，否则崩在夹具而不是被测代码上。
+    acceptance: list = []
+    raw_goal = "测试介入机制"
 
     def to_prompt(self):
         return "目标：测试介入机制"
@@ -150,13 +154,18 @@ class FakeKernel:
         self.memory = None
 
 
-def run_loop(script, intervene=None, max_steps=6, fail_times=0, max_identical=3):
-    """跑一遍 `_loop`，返回 (结果, 内核, 事件列表)。"""
+def run_loop(script, intervene=None, max_steps=6, fail_times=0,
+             max_identical=3, contract=None):
+    """跑一遍 `_loop`，返回 (结果, 内核, 事件列表)。
+
+    `contract` 可注入不同形状（2026-11-10 加）：长综述的「无人值守自动续步」
+    要能在同一套假模型/假门夹具上复现，而不是另起一套自证的脚本。
+    """
     k = FakeKernel(max_steps=max_steps, fail_times=fail_times,
                    max_identical=max_identical)
     k.llm = ScriptLLM(script)
     events: list[tuple[str, dict]] = []
-    res = Rongke._loop(k, "测试目标", FakeContract(), max_steps,
+    res = Rongke._loop(k, "测试目标", contract or FakeContract(), max_steps,
                        lambda kind, data: events.append((kind, data)),
                        None, intervene)
     return res, k, events
@@ -374,12 +383,17 @@ check("★ 且一个 intervene_* 事件都不发（CLI 的屏幕不该多出无�
 print("\n── 6. 原地打转：问一次就够，问多了就是烦人 ──")
 
 _stall_hits: list = []
+# 2026-11-11：stall 改成两段式（先告警、累计 N+3 次才问人）。
+# 脚本必须给到「问人阈值之后还有几次重复」，否则短路守卫的对照组
+# 根本测不到「反复问」——这是判据的**输入环境**，不是把断言改软。
 _SCRIPT6 = [("探", [CALL("probe")]), ("再探", [CALL("probe")]),
             ("还探", [CALL("probe")]), ("继续探", [CALL("probe")]),
-            ("探到死", [CALL("probe")]), ("好，交付", [DELIVER()])]
+            ("探到死", [CALL("probe")]), ("还探", [CALL("probe")]),
+            ("再探一次", [CALL("probe")]), ("最后一次", [CALL("probe")]),
+            ("好，交付", [DELIVER()])]
 _r6, _k6, _ev6 = run_loop(
     _SCRIPT6, intervene=lambda k, d: (_stall_hits.append(d), {"action": "continue"})[1],
-    max_steps=8, fail_times=0, max_identical=2)
+    max_steps=12, fail_times=0, max_identical=2)
 
 check("确实检测到了打转并广播 stall 事件",
       len([k for k in kinds(_ev6) if k == "stall"]) >= 1, True)
@@ -389,15 +403,18 @@ check("★ 问的是 stall 类型", [d.get("kind") for d in _stall_hits], ["stal
 check("★ 载荷带上了「卡在哪个动作」（界面才说得出一句人话）",
       [d.get("tool") for d in _stall_hits], ["probe"])
 
-# 承重自检：去掉「只问一次」的守卫
-_S1 = _SRC.replace("if call.fingerprint not in asked_stalls:",
-                   "if True:   # 承重自检：每次都问")
-check("补丁③锚点命中", _S1 != _SRC, True)
+# 承重自检：把「问人阈值」压回告警阈值 + 去掉「只问一次」的守卫。
+# 两处都短路才量得到「每次都问」；只短路一处会被另一道闸挡住（假绿）。
+_S1 = (_SRC.replace("STALL_ASK_EXTRA = 3", "STALL_ASK_EXTRA = 0")
+           .replace("and call.fingerprint not in asked_stalls):",
+                    "and True):  # 承重自检：每次都问"))
+check("补丁③锚点命中（两处）",
+      "STALL_ASK_EXTRA = 0" in _S1 and "每次都问" in _S1, True)
 _M3 = load_patched(_S1)
 _hits3: list = []
-_k7 = FakeKernel(max_steps=8, fail_times=0, max_identical=2)
+_k7 = FakeKernel(max_steps=12, fail_times=0, max_identical=2)
 _k7.llm = ScriptLLM(_SCRIPT6)
-_M3.Rongke._loop(_k7, "t", FakeContract(), 8, lambda k, d: None, None,
+_M3.Rongke._loop(_k7, "t", FakeContract(), 12, lambda k, d: None, None,
                  lambda k, d: (_hits3.append(d), {"action": "continue"})[1])
 check("★ 短路守卫后果然被反复问（证明「只问一次」这条在承重）",
       len(_hits3) > 1, True)
@@ -415,6 +432,79 @@ check("且零 intervene_* 事件",
       [k for k in kinds(_ev8) if k.startswith("intervene")], [])
 check("它确实成功了（前提复核：不是因为压根没跑）", _r8.success, True)
 
+
+# ══════════════ 8. 长综述「一次请求」：步数耗尽不许弹窗等人 ══════════════
+print("\n── 8. 长综述无人值守：自动续步，短任务原路径不变 ──")
+
+
+class LongReviewContract(FakeContract):
+    """只加形状字段，其余沿用 FakeContract（不另造一套夹具）。"""
+    needs_writing = True
+    answer_only = False
+    _is_review_like = True
+    _is_long_review = True
+    needs_figure = True
+    target_chars = None
+    stages = ["outline", "figure", "draft"]
+    acceptance = ["中文核心期刊体例"]
+    deliverables = ["综述.md"]
+    raw_goal = "写一篇综述"
+    goal = "写一篇综述"
+    needs_kb = True
+    needs_deck = False
+
+
+# 上限 2 步；脚本用尽后 ScriptLLM 返回「通过交付」⇒ 只有续了步才跑得到。
+_SCRIPT8 = [("探一下", [CALL("probe")]), ("再探一下", [CALL("probe")])]
+_hits9: list = []
+_r9, _k9, _ev9 = run_loop(
+    _SCRIPT8, intervene=lambda k, d: (_hits9.append(k), None)[1],
+    max_steps=2, contract=LongReviewContract())
+_e9 = [d for k, d in _ev9 if k == "step_limit_auto_extend"]
+check("★ 长综述步数耗尽：一个窗都不弹（一次请求不靠人点「继续」）",
+      _hits9, [])
+check("★ 自动续步真发了事件且如实记了加了多少", len(_e9), 1)
+if _e9:
+    check("  续的是 shape 的 20 步，max_steps 从 2 → 22",
+          (_e9[0]["add"], _e9[0]["max_steps"]), (20, 22))
+    check("  事件写明硬上限（不许无限续）", _e9[0]["max_times"], 2)
+check("★ 续完后第 3 步真的跑到了（success=True / steps=3）",
+      (_r9.success, _r9.steps), (True, 3))
+check("  且零 intervene_* 事件",
+      [k for k in kinds(_ev9) if k.startswith("intervene")], [])
+
+# 对照组：短任务 / 问答形状，仍走「问人」原路径，一个字不变。
+_hits10: list = []
+_r10, _k10, _ev10 = run_loop(
+    _SCRIPT8, intervene=lambda k, d: (_hits10.append(k), None)[1],
+    max_steps=2)
+check("★ 负控：非长综述仍照旧问人（形状改造没把介入机制拆了）",
+      [a.get("kind") for a in asks(_ev10)], ["step_limit"])
+check("  且没有自动续步事件",
+      [k for k in kinds(_ev10) if k == "step_limit_auto_extend"], [])
+
+# 承重自检：短路自动续，长综述必须退回弹窗路径。
+# ⚠️ 2026-11-11 真语义变更：续步资格收进了 `shape.should_auto_extend()`
+#    纯函数，`loop.py` 只 import 后调用。旧的字符串补丁锚点
+#    「and auto_extends < MAX_AUTO_EXTENDS」已不存在 ⇒ 别再靠替换源码文本
+#    打桩（那是参数串断言），直接短路**模块全局的单源函数**。
+_M8 = load_patched(_SRC)
+_orig_ext = _M8.should_auto_extend
+_M8.should_auto_extend = lambda *a, **kw: False
+check("补丁⑧短路生效（should_auto_extend 单源被短路）",
+      _M8.should_auto_extend("long_review", [], 0), False)
+_k8 = FakeKernel(max_steps=2, fail_times=0)
+_k8.llm = ScriptLLM(_SCRIPT8)
+_ev8b: list = []
+try:
+    _M8.Rongke._loop(_k8, "t", LongReviewContract(), 2,
+                     lambda k, d: _ev8b.append((k, d)), None,
+                     lambda k, d: None)
+finally:
+    _M8.should_auto_extend = _orig_ext
+check("★ 短路后长综述回到弹窗（证明自动续分支在承重）",
+      [d.get("kind") for k, d in _ev8b if k == "intervene_request"],
+      ["step_limit"])
 
 print()
 print("═══ 汇总 ═══")

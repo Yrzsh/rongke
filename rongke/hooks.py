@@ -27,7 +27,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
+
+HOOK_LAYERS: tuple[str, ...] = ("policy", "ext", "observer")
 
 _WIN_ABS = re.compile(r"^[A-Za-z]:[\\/]")
 _UNC = re.compile(r"^\\\\")
@@ -52,12 +54,183 @@ class HookDecision:
 class Hook:
     """钩子基类。before_call 返回 HookDecision；after_call 只做记录。"""
     name = "hook"
+    layer = "ext"
 
     def before_call(self, tool: Any, args: dict) -> HookDecision:
         return HookDecision.ok()
 
     def after_call(self, call: Any) -> None:
         return None
+
+
+class WorkflowHook(Hook):
+    """工作流扩展钩子协议（零依赖鸭子类型，完全兼容 `Hook`）。
+
+    除工具调用前后的 `before_call` / `after_call` 外，可选实现两个工作流插槽：
+      * `after_tool_obs(name, args, call, obs) -> str | None`
+        在工具观察文本回灌给模型前执行；返回非 None 字符串即替换观察文本，
+        返回 None 表示保持原样。
+      * `before_deliver(claim, ctx) -> dict | None`
+        在交付进入完成证据门前执行（如确定性对账/规范化）；返回结构化事实字典
+        或 None，不替代完成证据门。
+    """
+    name = "workflow_hook"
+    layer = "ext"
+
+    def after_tool_obs(self, name: str, args: dict, call: Any, obs: str) -> str | None:
+        return None
+
+    def before_deliver(self, claim: Any, ctx: dict) -> dict | None:
+        return None
+
+
+class HookPipeline:
+    """分层钩子管线：按固定顺序 `policy → ext → observer` 组合执行。
+
+    设计理由：
+      · 运行时每次任务装配 `policy`（工作区围栏）与 `observer`（遥测）时，
+        通过 `set_layer()` 只更新各自槽位，绝不抹掉插件/能力注册在 `ext` 槽的钩子。
+      · 同时实现 `__iter__` / `__len__` / `as_list()`，可直接传给
+        `ToolRegistry.hooks` 与 `wiring.inspect()`，完全兼容列表语义。
+    """
+
+    def __init__(self, *,
+                 policy: Iterable[Any] = (),
+                 ext: Iterable[Any] = (),
+                 observer: Iterable[Any] = ()) -> None:
+        self._layers: dict[str, list[Any]] = {
+            "policy": [h for h in policy if h is not None],
+            "ext": [h for h in ext if h is not None],
+            "observer": [h for h in observer if h is not None],
+        }
+
+    @staticmethod
+    def _check_layer(layer: str) -> str:
+        lv = str(layer or "ext").strip().lower()
+        if lv not in HOOK_LAYERS:
+            raise ValueError(f"未知钩子层 {layer!r}（仅支持 {list(HOOK_LAYERS)}）")
+        return lv
+
+    def add(self, hook: Any, layer: str | None = None) -> None:
+        if hook is None:
+            return
+        lv = self._check_layer(layer if layer is not None else getattr(hook, "layer", "ext"))
+        bucket = self._layers[lv]
+        if hook not in bucket:
+            bucket.append(hook)
+
+    def set_layer(self, layer: str, hooks: Iterable[Any]) -> None:
+        lv = self._check_layer(layer)
+        self._layers[lv] = [h for h in (hooks or ()) if h is not None]
+
+    def clear_layer(self, layer: str) -> None:
+        lv = self._check_layer(layer)
+        self._layers[lv].clear()
+
+    def remove(self, hook_or_name: Any) -> bool:
+        removed = False
+        for lv in HOOK_LAYERS:
+            before = len(self._layers[lv])
+            if isinstance(hook_or_name, str):
+                self._layers[lv] = [
+                    h for h in self._layers[lv]
+                    if getattr(h, "name", "") != hook_or_name
+                ]
+            else:
+                self._layers[lv] = [h for h in self._layers[lv] if h is not hook_or_name]
+            if len(self._layers[lv]) != before:
+                removed = True
+        return removed
+
+    def layer(self, layer: str) -> list[Any]:
+        return list(self._layers[self._check_layer(layer)])
+
+    def as_list(self) -> list[Any]:
+        out: list[Any] = []
+        for lv in HOOK_LAYERS:
+            out.extend(self._layers[lv])
+        return out
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.as_list())
+
+    def __len__(self) -> int:
+        return sum(len(self._layers[lv]) for lv in HOOK_LAYERS)
+
+    def run_before_call(self, tool: Any, args: dict) -> tuple[HookDecision, str]:
+        """按层序执行 `before_call`，返回 `(HookDecision, blocked_by)`。"""
+        cur_args = dict(args or {})
+        rewritten = False
+        for h in self.as_list():
+            fn = getattr(h, "before_call", None)
+            if not callable(fn):
+                continue
+            try:
+                dec = fn(tool, cur_args)
+            except Exception:                                  # noqa: BLE001
+                continue
+            if dec is None:
+                continue
+            if not dec.allow:
+                return dec, str(getattr(h, "name", "hook"))
+            if dec.args is not None:
+                cur_args = dec.args
+                rewritten = True
+        return HookDecision.ok(cur_args if rewritten else None), ""
+
+    def run_after_call(self, call: Any) -> None:
+        for h in self.as_list():
+            fn = getattr(h, "after_call", None)
+            if not callable(fn):
+                continue
+            try:
+                fn(call)
+            except Exception:                                  # noqa: BLE001
+                pass
+
+    def run_after_tool_obs(self, name: str, args: dict, call: Any, obs: str) -> str:
+        cur = obs
+        for h in self.as_list():
+            fn = getattr(h, "after_tool_obs", None)
+            if not callable(fn):
+                continue
+            try:
+                nxt = fn(name, args, call, cur)
+            except Exception:                                  # noqa: BLE001
+                continue
+            if isinstance(nxt, str):
+                cur = nxt
+        return cur
+
+    def run_before_deliver(self, claim: Any, ctx: dict | None = None) -> list[dict]:
+        """执行所有支持 `before_deliver` 的钩子，失败留痕不静默吞掉。"""
+        out: list[dict] = []
+        payload = ctx if ctx is not None else {}
+        for h in self.as_list():
+            fn = getattr(h, "before_deliver", None)
+            if not callable(fn):
+                continue
+            hname = str(getattr(h, "name", type(h).__name__))
+            try:
+                res = fn(claim, payload)
+            except Exception as e:                             # noqa: BLE001
+                out.append({"hook": hname, "ok": False,
+                            "error": f"{type(e).__name__}: {e}"})
+                continue
+            if res is not None:
+                out.append({"hook": hname, "ok": True, "result": res})
+        return out
+
+    def summary(self) -> dict:
+        all_h = self.as_list()
+        return {
+            "layers": {lv: [str(getattr(h, "name", type(h).__name__))
+                            for h in self._layers[lv]]
+                       for lv in HOOK_LAYERS},
+            "total": len(all_h),
+            "has_before": any(callable(getattr(h, "before_call", None)) for h in all_h),
+            "has_after": any(callable(getattr(h, "after_call", None)) for h in all_h),
+        }
 
 
 def looks_like_path(v: str) -> bool:
@@ -75,6 +248,7 @@ class WorkspaceFence(Hook):
     """工作区围栏：mutating 工具的绝对路径参数不得越界。"""
 
     name = "workspace_fence"
+    layer = "policy"
 
     def __init__(self, roots: list[Path], base: Path | None = None):
         self.roots = [Path(r).resolve() for r in roots]

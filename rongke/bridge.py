@@ -558,7 +558,8 @@ def _kb_zero_verdict(meta: dict, question: str = "") -> dict:
 
 
 def _kb_ask_fragments(question: str, ids=None, n_docs: int = 3,
-                      library: str = ""):
+                      library: str = "",
+                      workbench_dir: Path | None = None):
     """直接用 litkb 取片段 —— **不经过它的生成那一步**。
 
     返回 `(frags, refs, meta)`。`meta` 里有 `term_plan` / `coverage` /
@@ -574,7 +575,9 @@ def _kb_ask_fragments(question: str, ids=None, n_docs: int = 3,
       第一版我写的 `w.litkb` 会得到 `module 'workbench_mcp' has no attribute
       'litkb'`：litkb 是**懒导入**的，从来不是 workbench_mcp 的属性。
     """
-    w = _import_workbench(Path.home() / ".dsh" / "papers" / "workbench")
+    wb = (Path(workbench_dir) if workbench_dir is not None
+          else Path.home() / ".dsh" / "papers" / "workbench")
+    w = _import_workbench(wb)
     manager = getattr(w, "_kb_module", None)
     if manager is None:
         raise BridgeError("workbench_mcp 上没有 _kb_module（上游结构可能变了）")
@@ -1122,8 +1125,9 @@ def _wrap_kb_ask(inner, workbench_dir: Path):
         library = str(bound.arguments.get("library") or "")
 
         try:
-            frags, refs, meta = _kb_ask_fragments(question, ids=ids,
-                                                  n_docs=n_docs, library=library)
+            frags, refs, meta = _kb_ask_fragments(
+                question, ids=ids, n_docs=n_docs, library=library,
+                workbench_dir=workbench_dir)
         except Exception as e:                       # noqa: BLE001
             o["rongke_fallback"] = f"取片段失败：{type(e).__name__}: {e}"
             return json.dumps(o, ensure_ascii=False)

@@ -128,11 +128,19 @@ def test_packaging_excludes_user_data():
     """用户数据目录绝不能出现在打包清单里。"""
     py = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     pkgs = py.get("tool", {}).get("setuptools", {}).get("packages") or []
-    eq(pkgs, ["rongke", "rongke.web"], "只打 rongke 与 rongke.web 两个包")
+    eq(pkgs, ["rongke", "rongke.web", "aideck"],
+       "只打三个包：rongke / rongke.web / aideck（AI 画布引擎随包发布）")
     for p in pkgs:
         if p in ("topics", "memory", "runs", "materials", "evidence"):
             bad(f"用户数据目录被打进包：{p}")
     ok("打包清单里没有用户数据目录")
+    # ★ 资产清单是**两处同时改**：只改 pyproject 不改 spec ⇒ 源码装得上、
+    #   冻结版 exe 里 canvas_act 在册却 import aideck 失败。
+    spec = (ROOT / "packaging" / "rongke.spec").read_text(encoding="utf-8")
+    eq(', "aideck")' in spec, True,
+       "冻结版 spec datas 也带 aideck（wheel / exe 两处同时改）")
+    eq('hiddenimports += ["aideck"' in spec, True,
+       "冻结版显式声明 aideck 子模块（函数内动态 import 静态扫不到）")
 
     data = (py.get("tool", {}).get("setuptools", {})
               .get("package-data") or {})

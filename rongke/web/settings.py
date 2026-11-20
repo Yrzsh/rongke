@@ -16,7 +16,7 @@ import re
 import urllib.parse
 from typing import Any
 
-from ..config import PROVIDER_WRITE_KEYS, provider_write_key
+from ..config import PROVIDER_WRITE_KEYS, _normalize_base_url, provider_write_key
 
 REASONING_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -33,6 +33,7 @@ def provider_field_specs() -> list[dict[str, Any]]:
         {"key": "base_url", "kind": "url"},
         {"key": "reasoning_effort", "kind": "choice",
          "choices": list(REASONING_CHOICES)},
+        {"key": "send_reasoning_effort", "kind": "bool"},
         {"key": "api_key_env", "kind": "env"},
         {"key": "max_tokens", "kind": "int"},
         {"key": "stream_required", "kind": "bool"},
@@ -51,7 +52,7 @@ def _flatten(body: dict) -> dict[str, Any]:
     return src
 
 
-def _as_bool(v: Any) -> bool:
+def _as_bool(v: Any, field: str = "stream_required") -> bool:
     if isinstance(v, bool):
         return v
     if isinstance(v, int) and v in (0, 1):
@@ -62,7 +63,7 @@ def _as_bool(v: Any) -> bool:
             return True
         if s in ("0", "false", "no", "off", ""):
             return False
-    raise ValueError(f"stream_required 只接受 true/false（收到 {v!r}）")
+    raise ValueError(f"{field} 只接受 true/false（收到 {v!r}）")
 
 
 def parse_provider_updates(body: Any) -> dict[str, Any]:
@@ -91,7 +92,7 @@ def parse_provider_updates(body: Any) -> dict[str, Any]:
             else:
                 clean[bare] = s
         elif bare == "base_url":
-            s = str(v or "").strip()
+            s = _normalize_base_url(v)
             if not s:
                 errs.append("base_url 不能为空")
             elif not s.startswith(("http://", "https://")):
@@ -134,7 +135,12 @@ def parse_provider_updates(body: Any) -> dict[str, Any]:
                 clean[bare] = n
         elif bare == "stream_required":
             try:
-                clean[bare] = _as_bool(v)
+                clean[bare] = _as_bool(v, field="stream_required")
+            except ValueError as e:
+                errs.append(str(e))
+        elif bare == "send_reasoning_effort":
+            try:
+                clean[bare] = _as_bool(v, field="send_reasoning_effort")
             except ValueError as e:
                 errs.append(str(e))
 

@@ -339,7 +339,10 @@ class LLM:
         if self.p.stream_required:
             payload["stream"] = True
 
-        url = self.p.base_url + "/chat/completions"
+        base = str(self.p.base_url or "").strip().rstrip("/")
+        if base.lower().endswith("/chat/completions") and len(base) > len("/chat/completions"):
+            base = base[:-len("/chat/completions")].rstrip("/")
+        url = base + "/chat/completions"
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -394,6 +397,13 @@ class LLM:
                         raise LLMError(
                             "该通道只支持流式（HTTP 400 code:11101）—— "
                             "请把 config.json 的 provider.stream_required 置为 true"
+                        ) from e
+                    if (e.code == 400 and self.p.send_reasoning_effort
+                            and "reasoning_effort" in detail.lower()):
+                        raise LLMError(
+                            f"上游接口拒绝了 reasoning_effort 参数（HTTP 400：{detail}）—— "
+                            "请在「设置」页关掉「发送推理档位」，"
+                            "或将 config.json 的 provider.send_reasoning_effort 设为 false"
                         ) from e
                     raise LLMError(f"LLM 调用失败 —— {last_err}") from e
             except Exception as e:

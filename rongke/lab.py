@@ -38,7 +38,7 @@ import csv
 import io
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import lab_assets as A
@@ -46,20 +46,19 @@ from . import topic
 
 LAB_FILE = "LAB.jsonl"
 
-# 8 种事件。`observe`（定性）与 `measure`（定量）**必须是两个 kind** ——
+# 事件类型。`observe`（定性）与 `measure`（定量）**必须是两个 kind** ——
 # 合成一个 kind 加个 is_quant 布尔位，"没数据"就得靠人读，代码算不出来。
-#
-# `retract`（作废）为什么必须是第 8 个 kind（2026-11-03 补）：
-#   第一版没有它。于是在建本课题台账时脚本写重了 5 条 observe，唯一的处理办法是
-#   **手工去改 `LAB.jsonl`** —— 而"手工改台账"正是这个文件开头反对的那件事
-#   （本文件全部设计就是为了"出错能看出是哪一步写错的"）。
-#   一个 append-only 的账，若没有"作废"这一笔，它遇到错误就只有两种下场：
-#   要么被手工改写（丢失"当时写错了"这件事），要么永远错着。
-#   所以补上：**作废也是一次追加**，作废记录本身不可再作废（要撤销就重记一条新的）。
-KINDS = ("strain", "batch", "measure", "observe", "metric", "todo", "update", "close",
-         "retract")
+# `plan` / `experiment` / `progress` 让实验台账不仅能记菌株测量，还能接收任意课题的
+# 实验计划、排定后续跟进任务、并按课题追踪实验进度（全部 append-only）。
+KINDS = ("strain", "batch", "measure", "observe", "metric", "todo",
+         "plan", "experiment", "progress", "update", "close", "retract")
+
+EXP_STATUSES = ("planned", "running", "blocked", "done", "dropped")
+PLAN_STATUSES = ("planned", "active", "paused", "done")
+PRIORITIES = ("high", "normal", "low")
 
 _MAX_NOTE = 600          # 单条自由文本上限：台账不是日记，写太长就没人读
+_MAX_PLAN_TEXT = 12000   # 实验计划原文上限
 
 # 定性判断的落库值 → 表里显示的中文。**落库保留英文枚举**（代码要按它排序/过滤），
 # 只在渲染时翻译 —— 反过来的话，用户改一次叫法就得改一遍代码。
@@ -156,6 +155,31 @@ def record(slug: str, kind: str, root=None, **fields) -> dict:
             "live_events": st2["n_events"], "retracted": st2["n_retracted"]}
 
 
+def _next_id(existing: dict, prefix: str) -> str:
+    n = 1
+    while f"{prefix}{n:02d}" in existing:
+        n += 1
+    return f"{prefix}{n:02d}"
+
+
+def _norm_date(s: str) -> str:
+    t = str(s or "").strip()[:10]
+    if not t:
+        return ""
+    try:
+        return date.fromisoformat(t).isoformat()
+    except ValueError:
+        return ""
+
+
+def _add_days(base: str, days: int) -> str:
+    try:
+        d0 = date.fromisoformat(str(base or "")[:10]) if base else date.today()
+        return (d0 + timedelta(days=max(0, int(days)))).isoformat()
+    except Exception:
+        return ""
+
+
 def _validate(ev: dict, st: dict) -> dict:
     """形状校验。**不合格一律抛错** —— 台账里的脏数据比没有数据更糟：
     它会让人以为"我有 5 条定量"，而实际那 5 条是「长得快」这种字。
@@ -228,10 +252,113 @@ def _validate(ev: dict, st: dict) -> dict:
             raise ValueError("todo 必须给 id（如 T01）")
         ev["id"] = tid
         ev.setdefault("status", "open")
+        if ev.get("priority") and str(ev["priority"]) not in PRIORITIES:
+            raise ValueError(f"todo.priority 只能是 {'/'.join(PRIORITIES)}")
+        if ev.get("progress") is not None:
+            try:
+                p = int(ev["progress"])
+            except Exception:
+                raise ValueError(f"todo.progress 必须是 0–100 整数（收到 {ev.get('progress')!r}）") from None
+            ev["progress"] = max(0, min(100, p))
+        if ev.get("due"):
+            nd = _norm_date(str(ev["due"]))
+            if nd:
+                ev["due"] = nd
+        if ev.get("follow_up_at"):
+            nd = _norm_date(str(ev["follow_up_at"]))
+            if nd:
+                ev["follow_up_at"] = nd
+    if k == "plan":
+        pid = str(ev.get("id") or "").strip() or _next_id(st.get("plans") or {}, "P")
+        ev["id"] = pid
+        title = str(ev.get("title") or "").strip()
+        raw = str(ev.get("raw_text") or "").strip()
+        if not title and not raw:
+            raise ValueError("plan 必须给 title 或 raw_text")
+        if not title:
+            title = raw.splitlines()[0].lstrip("#").strip()[:120] or f"实验计划 {pid}"
+        ev["title"] = title[:160]
+        if raw:
+            ev["raw_text"] = raw[:_MAX_PLAN_TEXT]
+        pst = str(ev.get("status") or "active").strip().lower()
+        if pst not in PLAN_STATUSES:
+            raise ValueError(f"plan.status 只能是 {'/'.join(PLAN_STATUSES)}")
+        ev["status"] = pst
+        if ev.get("start_date"):
+            ev["start_date"] = _norm_date(str(ev["start_date"])) or str(ev["start_date"])[:10]
+        else:
+            ev["start_date"] = _today()
+        if ev.get("target_date"):
+            ev["target_date"] = _norm_date(str(ev["target_date"])) or str(ev["target_date"])[:10]
+    if k == "experiment":
+        eid = str(ev.get("id") or "").strip() or _next_id(st.get("experiments") or {}, "E")
+        ev["id"] = eid
+        title = str(ev.get("title") or "").strip()
+        if not title:
+            raise ValueError("experiment 必须给 title（实验名称/步骤名）")
+        ev["title"] = title[:200]
+        est = str(ev.get("status") or "planned").strip().lower()
+        if est not in EXP_STATUSES:
+            raise ValueError(f"experiment.status 只能是 {'/'.join(EXP_STATUSES)}")
+        ev["status"] = est
+        if ev.get("priority") and str(ev["priority"]) not in PRIORITIES:
+            raise ValueError(f"experiment.priority 只能是 {'/'.join(PRIORITIES)}")
+        ev.setdefault("priority", "normal")
+        if ev.get("progress") is not None:
+            try:
+                p = int(ev["progress"])
+            except Exception:
+                raise ValueError(f"experiment.progress 必须是 0–100 整数（收到 {ev.get('progress')!r}）") from None
+            ev["progress"] = max(0, min(100, p))
+        else:
+            ev["progress"] = 100 if est == "done" else (10 if est == "running" else 0)
+        if ev.get("started"):
+            ev["started"] = _norm_date(str(ev["started"])) or str(ev["started"])[:10]
+        if ev.get("due"):
+            ev["due"] = _norm_date(str(ev["due"])) or str(ev["due"])[:10]
+        if ev.get("follow_up_days") is not None:
+            try:
+                fdays = int(ev["follow_up_days"])
+            except Exception:
+                raise ValueError(f"experiment.follow_up_days 必须是整数（收到 {ev.get('follow_up_days')!r}）") from None
+            ev["follow_up_days"] = max(0, fdays)
+            if not ev.get("follow_up_at"):
+                base = ev.get("started") or _today()
+                ev["follow_up_at"] = _add_days(base, fdays)
+        if ev.get("follow_up_at"):
+            ev["follow_up_at"] = _norm_date(str(ev["follow_up_at"])) or str(ev["follow_up_at"])[:10]
+    if k == "progress":
+        ident = str(ev.get("id") or "").strip()
+        if not ident:
+            raise ValueError("progress 必须给 id（实验 E01 / 待办 T01 / 批次 B01）")
+        ev["id"] = ident
+        known_ids = set(st.get("experiments") or {}) | set(st.get("todos") or {}) | set(st.get("batches") or {})
+        if ident not in known_ids:
+            raise ValueError(
+                f"找不到要更新进度的对象 {ident!r}（已知：{', '.join(sorted(known_ids)) or '空'}）")
+        if ev.get("progress") is not None:
+            try:
+                p = int(ev["progress"])
+            except Exception:
+                raise ValueError(f"progress 必须是 0–100 整数（收到 {ev.get('progress')!r}）") from None
+            ev["progress"] = max(0, min(100, p))
+        if ev.get("status"):
+            st_v = str(ev["status"]).strip().lower()
+            allowed = set(EXP_STATUSES) | {"open", "closed"}
+            if st_v not in allowed:
+                raise ValueError(f"progress.status 不合法：{st_v!r}")
+            ev["status"] = st_v
+        if ev.get("next_follow_up"):
+            nd = _norm_date(str(ev["next_follow_up"]))
+            if not nd:
+                raise ValueError(f"next_follow_up 日期格式应为 YYYY-MM-DD（收到 {ev['next_follow_up']!r}）")
+            ev["next_follow_up"] = nd
+        if ev.get("progress") is None and not ev.get("status") and not str(ev.get("note") or "").strip() and not ev.get("next_follow_up"):
+            raise ValueError("progress 至少需要填写进度百分比、状态、备注或下次跟进日期之一")
     if k in ("update", "close"):
         ident = str(ev.get("id") or "").strip()
         if not ident:
-            raise ValueError(f"{k} 必须给 id（要更新的菌株编号/批次号/待办号）")
+            raise ValueError(f"{k} 必须给 id（要更新的菌株编号/批次号/待办号/实验号）")
         ev["id"] = ident
         if k == "update" and not isinstance(ev.get("fields"), dict):
             raise ValueError("update 必须给 fields（要改的字段字典），否则是条空更新")
@@ -246,7 +373,7 @@ def _validate(ev: dict, st: dict) -> dict:
             raise ValueError(
                 "retract 必须给 seq（要作废第几条，#seq 见事件序号）"
                 "或 target（按字段匹配，如 {'kind':'observe','code':'S01'}）")
-    for key in ("note", "text", "how", "what", "method"):
+    for key in ("note", "text", "how", "what", "method", "objective", "protocol"):
         if isinstance(ev.get(key), str) and len(ev[key]) > _MAX_NOTE:
             ev[key] = ev[key][:_MAX_NOTE] + "…"
     return ev
@@ -282,7 +409,7 @@ def _sig(e: dict, seq=None) -> str:
     kind = e.get("kind")
     n = seq if isinstance(seq, int) else (e.get("seq") if isinstance(e.get("seq"), int) else "?")
     bits = [f"#{n}", str(kind)]
-    for kk in ("code", "id", "metric", "value", "unit", "growth", "what"):
+    for kk in ("code", "id", "metric", "value", "unit", "growth", "what", "title", "progress"):
         if e.get(kk) not in (None, ""):
             bits.append(f"{kk}={e.get(kk)}")
     return " ".join(bits)[:96] + f"（{e.get('at','')}）"
@@ -378,7 +505,8 @@ def _fold(evs: list[dict]) -> dict:
                 pass
 
     st = {"strains": {}, "batches": {}, "measures": [], "observes": [],
-          "metrics": {}, "todos": {}, "closed": {}, "n_events": 0,
+          "metrics": {}, "todos": {}, "plans": {}, "experiments": {},
+          "progress_logs": [], "closed": {}, "n_events": 0,
           "n_raw_events": len(evs), "n_retracted": 0, "retracted": []}
     for pos, e in zip(seqs, evs):
         k = e.get("kind")
@@ -416,6 +544,46 @@ def _fold(evs: list[dict]) -> dict:
             st["strains"].setdefault(e.get("code"), {"code": e.get("code")})
         elif k == "todo":
             st["todos"][e.get("id")] = dict(e)
+        elif k == "plan":
+            pid = e.get("id")
+            cur = st["plans"].get(pid, {"id": pid})
+            cur.update({kk: vv for kk, vv in e.items() if kk != "kind"})
+            st["plans"][pid] = cur
+        elif k == "experiment":
+            eid = e.get("id")
+            cur = st["experiments"].get(eid, {"id": eid, "logs": []})
+            cur.update({kk: vv for kk, vv in e.items() if kk != "kind"})
+            cur.setdefault("logs", [])
+            st["experiments"][eid] = cur
+        elif k == "progress":
+            ident = e.get("id")
+            log_row = {
+                "seq": pos, "id": ident, "at": e.get("at", ""),
+                "progress": e.get("progress"), "status": e.get("status", ""),
+                "note": e.get("note", ""), "next_follow_up": e.get("next_follow_up", ""),
+            }
+            st["progress_logs"].append(log_row)
+            tgt = (st["experiments"].get(ident)
+                   or st["todos"].get(ident)
+                   or st["batches"].get(ident))
+            if tgt is not None:
+                if e.get("progress") is not None:
+                    tgt["progress"] = e["progress"]
+                if e.get("status"):
+                    tgt["status"] = e["status"]
+                elif e.get("progress") == 100:
+                    tgt["status"] = "closed" if ident in st["todos"] else "done"
+                elif e.get("progress") is not None and e["progress"] > 0 and tgt.get("status") in (None, "planned", "open"):
+                    tgt["status"] = "running"
+                if e.get("next_follow_up"):
+                    if ident in st["todos"]:
+                        tgt["due"] = e["next_follow_up"]
+                    else:
+                        tgt["follow_up_at"] = e["next_follow_up"]
+                if e.get("note"):
+                    tgt["last_note"] = e["note"]
+                tgt["last_progress_at"] = e.get("at", "")
+                tgt.setdefault("logs", []).append(log_row)
         elif k == "update":
             # ⚠️ 这里**不许用 `break`**。循环是 `for pos, e in zip(seqs, evs)`，
             #   在分支顶层写 `break` 退出的是**事件循环**，不是分支 ——
@@ -443,13 +611,23 @@ def _fold(evs: list[dict]) -> dict:
                 st["batches"][ident].update(flds)
             elif ident in st["todos"]:
                 st["todos"][ident].update(flds)
+            elif ident in st["experiments"]:
+                st["experiments"][ident].update(flds)
+            elif ident in st["plans"]:
+                st["plans"][ident].update(flds)
         elif k == "close":
             ident = e.get("id")
             st["closed"][ident] = {"id": ident, "how": e.get("how", ""), "at": e.get("at", "")}
             if ident in st["todos"]:
                 st["todos"][ident]["status"] = "closed"
+                st["todos"][ident]["progress"] = 100
             if ident in st["batches"]:
                 st["batches"][ident]["status"] = "done"
+            if ident in st["experiments"]:
+                st["experiments"][ident]["status"] = "done"
+                st["experiments"][ident]["progress"] = 100
+            if ident in st["plans"]:
+                st["plans"][ident]["status"] = "done"
     return st
 
 
@@ -462,6 +640,36 @@ def _state(slug: str, root=None) -> dict:
 def state(slug: str, root=None) -> dict:
     """公开的状态视图（给 `topic.status_view` 与工具用）。"""
     return _state(slug, root)
+
+
+def timeline(slug: str, root=None) -> list[dict]:
+    """给 Web 台账用的事件流：每条带上**解析后的 `seq`** 与 `retracted` 标记。
+
+    ★ 为什么不让前端自己算序号/作废：`_seqs`（老账无 seq 按位置）与 `_dead_seqs`
+      （只认 target_seq）这套折叠规则若在前端再写一遍，就是第二处真相 ——
+      哪天作废判据改了，页面会悄悄和内核说的不一样。这里把规则收在一处，
+      前端只负责画。被作废的那条标 `retracted=True` 并带上理由；作废记录本身
+      （kind=retract）照常列出，让"这里改过、为什么改"在页面上看得见。
+    """
+    evs = events(slug, root)
+    seqs = _seqs(evs)
+    dead = _dead_seqs(evs)
+    why_of: dict[int, str] = {}
+    for e in evs:
+        if e.get("kind") == "retract":
+            try:
+                why_of[int(e.get("target_seq"))] = str(e.get("reason") or "")
+            except (TypeError, ValueError):
+                continue
+    out: list[dict] = []
+    for e, s in zip(evs, seqs):
+        row = dict(e)
+        row["seq"] = s
+        row["retracted"] = s in dead
+        if s in dead:
+            row["retract_reason"] = why_of.get(s, "")
+        out.append(row)
+    return out
 
 
 # ══ 视图 ═════════════════════════════════════════════════════
@@ -658,6 +866,28 @@ def next_actions(slug: str, asof: str = "", limit: int = 6, gap_cap: int = 3,
                                   "source": "台账·todo", "due": due, "id": tid})
     todo_acts = overdue_acts + upcoming_acts
 
+    # ②b 实验进度与随访排期（阻塞 / 逾期 / 今日需跟进）
+    exp_acts: list[dict] = []
+    for eid in sorted(st.get("experiments") or {}):
+        ex = st["experiments"][eid]
+        if ex.get("status") in ("done", "dropped"):
+            continue
+        due = str(ex.get("follow_up_at") or ex.get("due") or "")
+        if ex.get("status") == "blocked":
+            exp_acts.append({
+                "what": f"实验 {eid}「{ex.get('title','?')}」受阻 ⇒ 排查卡点并更新进度",
+                "why": ex.get("last_note") or ex.get("note") or "状态标为 blocked",
+                "source": "台账·experiment", "due": due or asof, "id": eid,
+            })
+        elif due and due[:10] <= asof:
+            days_over = _days_between(due, asof)
+            exp_acts.append({
+                "what": f"跟进实验 {eid}「{ex.get('title','?')}」（当前 {ex.get('progress', 0)}%）",
+                "why": (f"已逾期 {days_over} 天（计划 {due}）" if days_over > 0
+                        else f"今日（{due}）到期跟进"),
+                "source": "台账·experiment", "due": due, "id": eid,
+            })
+
     # ③ 身份证据缺第一环
     #    ⚠️ 这是**关键词判据**（台账里没有"身份证据"这个 kind）：
     #    只要待办/测量/观察里出现过核相相关词，就认为这条已经安排上了。
@@ -700,7 +930,377 @@ def next_actions(slug: str, asof: str = "", limit: int = 6, gap_cap: int = 3,
             "id": key,
         })
 
-    return (batch_acts + todo_acts + ident_acts + gap_acts[:gap_cap])[:limit]
+    return (batch_acts + exp_acts + todo_acts + ident_acts + gap_acts[:gap_cap])[:limit]
+
+
+# ══ 实验计划解析、排期与项目进度追踪 ═════════════════════════
+_RE_PLAN_STEP = re.compile(
+    r"^\s*(?:[-*•]\s*(?:\[[ xX]\]\s*)?|(?:\d+|[一二三四五六七八九十]+)[.、．)]\s*|"
+    r"(?:Step|Phase|阶段|步骤)\s*\d+\s*[:：]?)\s*(.+?)\s*$",
+    re.I,
+)
+_RE_PHASE_HEAD = re.compile(r"^\s*#{1,4}\s*(.+?)\s*$")
+_RE_EXPLICIT_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+_RE_DAY_RANGE = re.compile(r"(?:Day|D|第)\s*(\d{1,3})(?:\s*[-~至到]\s*(\d{1,3}))?\s*(?:天|日)?", re.I)
+_RE_DUR_DAYS = re.compile(r"(?:预计|耗时|周期|用时|duration)?\s*(\d{1,3})\s*(?:天|日|days?)\b", re.I)
+_RE_DUR_WEEKS = re.compile(r"(\d{1,2})\s*(?:周|weeks?)\b", re.I)
+
+
+def parse_experimental_plan(raw_text: str, *, title: str = "",
+                            start_date: str = "",
+                            default_follow_up_days: int = 3) -> dict:
+    """把自由文本/Markdown 实验计划确定性拆成「实验步骤 + 排期 + 随访节点」。
+
+    支持常见写法：编号列表（1. / 1)）、复选框（- [ ]）、阶段标题（## 阶段一）、
+    时间线索（Day 1-3 / 第 5 天 / 预计 4 天 / 2 周 / 2026-11-25）。
+    """
+    src = str(raw_text or "").replace("\r\n", "\n").strip()
+    base_date = _norm_date(start_date) or _today()
+    follow_gap = max(1, int(default_follow_up_days or 3))
+
+    plan_title = str(title or "").strip()
+    objective = ""
+    phase = ""
+    steps: list[dict] = []
+    cursor_days = 0
+
+    lines = src.splitlines()
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        hm = _RE_PHASE_HEAD.match(s)
+        if hm:
+            ht = hm.group(1).strip()
+            if not plan_title and s.startswith("# "):
+                plan_title = ht[:160]
+            else:
+                phase = ht[:80]
+            continue
+        if not objective and re.match(r"^(?:目标|研究目的|目的|Objective)\s*[:：]", s, re.I):
+            objective = re.sub(r"^(?:目标|研究目的|目的|Objective)\s*[:：]\s*", "", s, flags=re.I)[:400]
+            continue
+
+        sm = _RE_PLAN_STEP.match(s)
+        item_text = sm.group(1).strip() if sm else ""
+        if not item_text and len(lines) <= 20 and not s.startswith((">", "|", "---")):
+            # 短文本每行也可视作一步（只要不是表格/引用/标题）
+            item_text = s
+        if not item_text:
+            continue
+
+        # 提取日期 / 天数 / 优先级
+        explicit_dates = _RE_EXPLICIT_DATE.findall(item_text)
+        day_m = _RE_DAY_RANGE.search(item_text)
+        dur_days = None
+        wm = _RE_DUR_WEEKS.search(item_text)
+        dm = _RE_DUR_DAYS.search(item_text)
+        if day_m:
+            d_start = int(day_m.group(1))
+            d_end = int(day_m.group(2) or day_m.group(1))
+            dur_days = max(1, d_end - d_start + 1)
+            step_start = _add_days(base_date, max(0, d_start - 1))
+            step_due = _add_days(base_date, max(0, d_end))
+            cursor_days = max(cursor_days, d_end)
+        elif explicit_dates:
+            step_start = explicit_dates[0]
+            step_due = explicit_dates[-1]
+            dur_days = max(1, _days_between(step_start, step_due) or follow_gap)
+        else:
+            if wm:
+                dur_days = max(1, int(wm.group(1)) * 7)
+            elif dm:
+                dur_days = max(1, int(dm.group(1)))
+            else:
+                dur_days = follow_gap
+            step_start = _add_days(base_date, cursor_days)
+            cursor_days += dur_days
+            step_due = _add_days(base_date, cursor_days)
+
+        prio = "high" if any(k in item_text for k in ("关键", "核心", "优先", "P0", "对照", "必须")) else "normal"
+        clean_title = re.sub(r"\s*[（(]\s*(?:预计|周期|耗时)?\s*\d+\s*(?:天|日|周)\s*[)）]", "", item_text)
+        clean_title = clean_title.strip()[:180] or item_text[:180]
+        follow_at = step_due if _days_between(step_start, step_due) <= follow_gap else _add_days(step_start, follow_gap)
+
+        steps.append({
+            "title": clean_title,
+            "phase": phase,
+            "started": step_start,
+            "due": step_due,
+            "follow_up_at": follow_at,
+            "duration_days": dur_days,
+            "priority": prio,
+            "protocol": item_text[:300],
+        })
+
+    if not plan_title:
+        first_line = (lines[0].lstrip("#").strip() if lines else "")[:80]
+        plan_title = first_line or "实验计划"
+    return {
+        "title": plan_title[:160],
+        "objective": objective,
+        "start_date": base_date,
+        "target_date": steps[-1]["due"] if steps else base_date,
+        "steps": steps,
+    }
+
+
+def import_plan(slug: str, *, raw_text: str = "", title: str = "",
+                objective: str = "", start_date: str = "",
+                steps: list[dict] | None = None,
+                auto_schedule: bool = True,
+                default_follow_up_days: int = 3,
+                root=None) -> dict:
+    """接收一份实验计划并按课题存入 LAB.jsonl：
+    1) 写 `plan` 记录；
+    2) 为每个实验步骤创建 `experiment` 记录（带起始日、截止日、跟进日）；
+    3) 开启 `auto_schedule` 时自动创建后续随访 `todo` 排期；
+    全部 append-only，写完逐条读回核验。
+    """
+    if not str(raw_text or "").strip() and not (steps or []):
+        raise ValueError("请提供实验计划内容（raw_text）或结构化步骤（steps）")
+    parsed = parse_experimental_plan(
+        raw_text, title=title, start_date=start_date,
+        default_follow_up_days=default_follow_up_days,
+    ) if not steps else {
+        "title": str(title or "").strip() or "实验计划",
+        "objective": str(objective or "").strip(),
+        "start_date": _norm_date(start_date) or _today(),
+        "target_date": "",
+        "steps": list(steps),
+    }
+    if objective and not parsed.get("objective"):
+        parsed["objective"] = str(objective).strip()
+    step_list = parsed.get("steps") or []
+    if not step_list:
+        raise ValueError("没能从实验计划里解析出任何实验步骤 —— 请用列表或分条写出步骤")
+
+    base_date = parsed.get("start_date") or _today()
+    p_res = record(
+        slug, "plan", root=root,
+        title=parsed["title"],
+        objective=parsed.get("objective", ""),
+        raw_text=raw_text or "\n".join(str(s.get("title") or "") for s in step_list),
+        start_date=base_date,
+        target_date=parsed.get("target_date") or "",
+        step_count=len(step_list),
+    )
+    plan_id = p_res["event"]["id"]
+
+    created_exps: list[dict] = []
+    created_todos: list[dict] = []
+    cursor = 0
+    for idx, sp in enumerate(step_list, 1):
+        if not isinstance(sp, dict):
+            sp = {"title": str(sp)}
+        st_title = str(sp.get("title") or "").strip()
+        if not st_title:
+            continue
+        dur = int(sp.get("duration_days") or default_follow_up_days or 3)
+        s_start = _norm_date(str(sp.get("started") or "")) or _add_days(base_date, cursor)
+        s_due = _norm_date(str(sp.get("due") or "")) or _add_days(s_start, max(1, dur))
+        if not sp.get("due"):
+            cursor += max(1, dur)
+        s_follow = _norm_date(str(sp.get("follow_up_at") or "")) or s_due
+        er = record(
+            slug, "experiment", root=root,
+            plan_id=plan_id,
+            title=st_title,
+            phase=str(sp.get("phase") or ""),
+            protocol=str(sp.get("protocol") or ""),
+            objective=str(sp.get("objective") or ""),
+            started=s_start,
+            due=s_due,
+            follow_up_at=s_follow,
+            priority=str(sp.get("priority") or "normal") if sp.get("priority") in PRIORITIES else "normal",
+            status=str(sp.get("status") or ("running" if idx == 1 else "planned")),
+            progress=int(sp.get("progress") or 0),
+        )
+        ex_ev = er["event"]
+        created_exps.append(ex_ev)
+        if auto_schedule:
+            st_cur = _state(slug, root)
+            tid = _next_id(st_cur.get("todos") or {}, "T")
+            tr = record(
+                slug, "todo", root=root,
+                id=tid,
+                what=f"[{ex_ev['id']}] {st_title}",
+                due=s_due,
+                follow_up_at=s_follow,
+                experiment_id=ex_ev["id"],
+                plan_id=plan_id,
+                priority=ex_ev.get("priority", "normal"),
+            )
+            created_todos.append(tr["event"])
+
+    prog = project_progress(slug, root=root)
+    return {
+        "ok": bool(p_res.get("ok")) and len(created_exps) > 0,
+        "verified": bool(p_res.get("verified")),
+        "plan_id": plan_id,
+        "plan": p_res["event"],
+        "experiments": created_exps,
+        "todos": created_todos,
+        "progress": prog,
+    }
+
+
+def _schedule_bucket(due: str, status: str, asof: str) -> tuple[str, int | None]:
+    if status in ("done", "closed", "dropped"):
+        return "completed", None
+    d = _norm_date(due)
+    if not d:
+        return "unscheduled", None
+    left = _days_between(asof, d)
+    if left < 0:
+        return "overdue", left
+    if left == 0:
+        return "today", 0
+    if left <= 7:
+        return "this_week", left
+    return "upcoming", left
+
+
+def project_progress(slug: str, asof: str = "", root=None) -> dict:
+    """按课题汇总实验计划、进度百分比与随访排期（纯函数折叠自 LAB.jsonl）。"""
+    st = _state(slug, root)
+    asof = _norm_date(asof) or _today()
+    exps = list((st.get("experiments") or {}).values())
+    todos = list((st.get("todos") or {}).values())
+    batches = list((st.get("batches") or {}).values())
+    plans = list((st.get("plans") or {}).values())
+
+    buckets: dict[str, list[dict]] = {
+        "overdue": [], "today": [], "this_week": [],
+        "upcoming": [], "unscheduled": [], "completed": [],
+    }
+    exp_rows: list[dict] = []
+    for ex in sorted(exps, key=lambda x: (str(x.get("due") or "9999"), str(x.get("id") or ""))):
+        due = str(ex.get("follow_up_at") or ex.get("due") or "")
+        bname, left = _schedule_bucket(due, str(ex.get("status") or "planned"), asof)
+        row = dict(ex)
+        row["days_left"] = left
+        row["overdue"] = (bname == "overdue")
+        row["bucket"] = bname
+        exp_rows.append(row)
+        buckets[bname].append({
+            "kind": "experiment", "id": ex.get("id"), "title": ex.get("title"),
+            "phase": ex.get("phase", ""), "status": ex.get("status", "planned"),
+            "progress": int(ex.get("progress") or 0), "due": ex.get("due", ""),
+            "follow_up_at": ex.get("follow_up_at", ""), "days_left": left,
+            "priority": ex.get("priority", "normal"),
+            "last_note": ex.get("last_note", ""),
+        })
+
+    todo_rows: list[dict] = []
+    for td in sorted(todos, key=lambda x: (str(x.get("due") or "9999"), str(x.get("id") or ""))):
+        due = str(td.get("due") or td.get("follow_up_at") or "")
+        status = str(td.get("status") or "open")
+        bname, left = _schedule_bucket(due, status, asof)
+        row = dict(td)
+        row["days_left"] = left
+        row["overdue"] = (bname == "overdue")
+        row["bucket"] = bname
+        todo_rows.append(row)
+        # 避免与关联实验重复塞进同一日程，只在未关联 experiment 时或需要单独跟进时列
+        buckets[bname].append({
+            "kind": "todo", "id": td.get("id"), "title": td.get("what"),
+            "experiment_id": td.get("experiment_id", ""),
+            "status": status, "progress": 100 if status == "closed" else int(td.get("progress") or 0),
+            "due": td.get("due", ""), "follow_up_at": td.get("follow_up_at", ""),
+            "days_left": left, "priority": td.get("priority", "normal"),
+            "last_note": td.get("last_note", ""),
+        })
+
+    for b in sorted(batches, key=lambda x: str(x.get("id") or "")):
+        exp_d = b.get("expect_days")
+        b_due = _add_days(str(b.get("started") or ""), int(exp_d)) if exp_d and b.get("started") else ""
+        b_status = str(b.get("status") or "running")
+        bname, left = _schedule_bucket(b_due, b_status, asof)
+        buckets[bname].append({
+            "kind": "batch", "id": b.get("id"),
+            "title": f"批次 {b.get('id')}（{b.get('code') or '—'}）",
+            "status": b_status, "progress": 100 if b_status == "done" else 50,
+            "due": b_due, "follow_up_at": b_due, "days_left": left,
+            "priority": "high" if bname in ("overdue", "today") else "normal",
+        })
+
+    active_exps = [e for e in exps if e.get("status") != "dropped"]
+    if active_exps:
+        overall = round(sum(int(e.get("progress") or (100 if e.get("status") == "done" else 0))
+                            for e in active_exps) / len(active_exps))
+    elif todos:
+        overall = round(sum(100 if t.get("status") == "closed" else int(t.get("progress") or 0)
+                            for t in todos) / len(todos))
+    elif batches:
+        overall = round(sum(100 if b.get("status") == "done" else 0 for b in batches) / len(batches))
+    else:
+        overall = 0
+
+    counts = {
+        "plans": len(plans),
+        "experiments_total": len(exps),
+        "experiments_done": sum(1 for e in exps if e.get("status") == "done"),
+        "experiments_running": sum(1 for e in exps if e.get("status") == "running"),
+        "experiments_blocked": sum(1 for e in exps if e.get("status") == "blocked"),
+        "experiments_planned": sum(1 for e in exps if e.get("status") == "planned"),
+        "todos_total": len(todos),
+        "todos_done": sum(1 for t in todos if t.get("status") == "closed"),
+        "todos_open": sum(1 for t in todos if t.get("status") != "closed"),
+        "todos_overdue": sum(1 for t in todo_rows if t["overdue"]),
+        "batches_total": len(batches),
+        "batches_running": sum(1 for b in batches if b.get("status") != "done"),
+        "batches_done": sum(1 for b in batches if b.get("status") == "done"),
+        "overdue_total": len(buckets["overdue"]),
+    }
+    return {
+        "slug": slug,
+        "asof": asof,
+        "overall_progress_pct": overall,
+        "counts": counts,
+        "plans": sorted(plans, key=lambda x: str(x.get("id") or "")),
+        "experiments": exp_rows,
+        "todos": todo_rows,
+        "schedule": buckets,
+        "recent_logs": list(reversed(st.get("progress_logs") or []))[:15],
+    }
+
+
+def all_projects_progress(asof: str = "", root=None) -> list[dict]:
+    """跨课题汇总每个项目的阶段、总体进度与逾期提醒（只读扫描 topics/）。"""
+    asof = _norm_date(asof) or _today()
+    out: list[dict] = []
+    for t in topic.list_topics(root=root):
+        slug = str(t.get("slug") or "")
+        if not slug:
+            continue
+        p = project_progress(slug, asof=asof, root=root)
+        st = _state(slug, root)
+        c = p["counts"]
+        upcoming_dates = sorted(
+            str(x.get("follow_up_at") or x.get("due") or "")
+            for x in (p["schedule"]["overdue"] + p["schedule"]["today"]
+                      + p["schedule"]["this_week"] + p["schedule"]["upcoming"])
+            if (x.get("follow_up_at") or x.get("due"))
+        )
+        out.append({
+            "slug": slug,
+            "title": t.get("title") or slug,
+            "stage": t.get("stage") or "ideate",
+            "next_step": t.get("next_step") or "",
+            "open_blockers": int(t.get("open_blockers") or 0),
+            "overall_progress_pct": p["overall_progress_pct"],
+            "plans": c["plans"],
+            "experiments_total": c["experiments_total"],
+            "experiments_done": c["experiments_done"],
+            "experiments_running": c["experiments_running"],
+            "experiments_blocked": c["experiments_blocked"],
+            "todos_open": c["todos_open"],
+            "overdue_total": c["overdue_total"],
+            "next_due": upcoming_dates[0] if upcoming_dates else "",
+            "n_events": st.get("n_events", 0),
+        })
+    return out
 
 
 def digest(slug: str, asof: str = "", max_chars: int = 700, root=None) -> str:
@@ -725,6 +1325,13 @@ def digest(slug: str, asof: str = "", max_chars: int = 700, root=None) -> str:
              f"菌株 {len(st['strains'])} ｜ 批次 {len(st['batches'])}（进行中 {len(running)}）｜ "
              f"定量 {len(st['measures'])} 条 ｜ 缺口 {len(gp)}（无值 {n_missing}／n不足 {n_few}）｜ "
              f"待办 {len(open_todos)}"]
+    if st.get("plans") or st.get("experiments"):
+        _pp = project_progress(slug, asof=asof, root=root)
+        _pc = _pp["counts"]
+        lines.append(
+            f"实验计划 {_pc['plans']} 份 ｜ 实验 {_pc['experiments_done']}/{_pc['experiments_total']} 完成"
+            f"（总体进度 {_pp['overall_progress_pct']}% ｜ 逾期 {_pc['overdue_total']}）"
+        )
     # 作废：不是"没发生过"，而是"记过、且被划掉了"。摘要里不写，模型就会拿作废的
     # 那几条照样汇报（它看得见事件原文，看不见折叠过程）。
     if st["n_retracted"]:
@@ -904,6 +1511,26 @@ def render_md(slug: str, now: str = "", asof: str = "", root=None) -> str:
     for x in A.IDENTITY_CHAIN:
         L.append(f"- {x['label']}：{x['how'][:70]}　〔{x['anchor']}〕（{x['cost']}）")
     L.append("")
+
+    # ── 六、实验计划与进度追踪（有计划/实验事件时才渲染） ──
+    if st.get("plans") or st.get("experiments"):
+        pp = project_progress(slug, asof=asof, root=root)
+        L.append(f"## 六、实验计划与进度追踪（总体进度 {pp['overall_progress_pct']}%）")
+        L.append("")
+        for p_item in pp["plans"]:
+            L.append(f"- 计划 `{p_item['id']}`：**{p_item.get('title','')}**"
+                     + (f"（起始 {p_item['start_date']}）" if p_item.get("start_date") else ""))
+        if pp["experiments"]:
+            L.append("")
+            L.append("| 编号 | 实验步骤 | 状态 | 进度 | 截止 | 跟进日 | 最近备注 |")
+            L.append("|---|---|---|---|---|---|---|")
+            for ex in pp["experiments"]:
+                L.append(
+                    f"| {ex['id']} | {ex.get('title','—')} | {ex.get('status','planned')} | "
+                    f"{ex.get('progress', 0)}% | {ex.get('due') or '—'} | "
+                    f"{ex.get('follow_up_at') or '—'} | {ex.get('last_note') or ex.get('note') or '—'} |"
+                )
+        L.append("")
 
     # ── 附、作废清单
     # 为什么要在"给导师看的一页"上留这个：作废不是删除，它是**一次更正**。

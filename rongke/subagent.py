@@ -457,6 +457,55 @@ def list_profiles() -> list[SubagentProfile]:
     return list(BUILTIN_PROFILES.values())
 
 
+def profile_dirs(cfg: Any = None) -> list[Path]:
+    """自定义子代理 `.md` 的搜索目录（只返回真实存在的目录，跳过权限/路径异常）。
+
+    搜索顺序：
+      1. 环境变量 `RONGKE_SUBAGENTS`（`os.pathsep` 分隔）
+      2. 配置 `subagent.profiles_dir` / `subagent.dirs`（可选）
+      3. `<data_root>/subagents`
+      4. `~/.rongke/subagents`
+    """
+    raw: list[Path] = []
+    env = str(os.environ.get("RONGKE_SUBAGENTS", "") or "").strip()
+    if env:
+        for p in env.split(os.pathsep):
+            if p.strip():
+                raw.append(Path(p.strip()).expanduser())
+    sc = getattr(cfg, "subagent", None) if cfg is not None else None
+    if sc is not None:
+        single = getattr(sc, "profiles_dir", None)
+        if single and str(single).strip():
+            raw.append(Path(str(single).strip()).expanduser())
+        extra = getattr(sc, "dirs", None)
+        if isinstance(extra, (list, tuple)):
+            for d in extra:
+                if str(d).strip():
+                    raw.append(Path(str(d).strip()).expanduser())
+    try:
+        from .config import data_root
+        raw.append(data_root() / "subagents")
+    except Exception:                                          # noqa: BLE001
+        pass
+    try:
+        raw.append(Path.home() / ".rongke" / "subagents")
+    except Exception:                                          # noqa: BLE001
+        pass
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in raw:
+        try:
+            if not p.is_dir():
+                continue
+            key = str(p.resolve())
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
 def load_profiles_from(directory: "Path | str") -> tuple[list[SubagentProfile],
                                                          list[Diagnosis]]:
     """把一个目录里的 `*.md` 读成 profiles。**坏文件只出诊断、不拦好文件**。"""
@@ -673,6 +722,21 @@ def subagent_brief(profile: SubagentProfile, task: str,
     return "\n".join(lines)
 
 
+# ── 派发失败（2026-11-14 口径变更）──────────────────────────────
+# 旧口径：`delegate`「不许抛异常」，把派发失败**拼成一段字符串返回**。
+# 但 tools.py:403-421 只在 fn 抛异常时置 ok=False ⇒ 派发失败、
+# SubagentResult(ok=False) 全被记成 ToolCall.ok=True，假证据进证据门/统计。
+# 新口径：**失败一定抛**，与 mcp_client.py:602「绝不返回看起来成功的
+# 字符串」同源。重发顾虑有兜底：tools.py:336 对失败调用也按 fingerprint
+# 计数，loop.py:6117 的 repeated_call 两段式收敛告警 + stall 终止。
+class SubagentDispatchError(RuntimeError):
+    """派发这一步就失败（不是子任务干到一半失败）。抛给注册表记 ok=False。"""
+
+
+#: 失败文案里明确劝阻原样重发 —— 模型看到"失败"最容易把同一个调用再发一遍。
+_DISPATCH_HINT = "不要重复同一个调用；请自己接着做，或换一个 profile 再试一次。"
+
+
 @dataclass
 class SubagentResult:
     """交回父级的**全部内容**。刻意没有 messages / 工具原文 —— 见模块 docstring 红线 2。"""
@@ -746,11 +810,16 @@ class SubagentRunner:
     也不给别的任务插队改 cwd 的机会。这条还原同样**不靠相信**：自检里比对了 cwd。
     """
 
-    def __init__(self, cfg: Any = None, host: Any = None) -> None:
+    def __init__(self, cfg: Any = None, host: Any = None,
+                 profiles_dirs: Iterable[Path | str] | None = None) -> None:
         from .config import Config
         self.cfg = cfg or Config.load()
         #: 父实例。本类**只读它的身份做事后自检**，绝不往里写、绝不调它的 run()。
         self.host = host
+        #: 可选的自定义 profile 目录列表；None 时按 `profile_dirs(self.cfg)` 发现。
+        self._explicit_profile_dirs: list[Path] | None = (
+            [Path(d) for d in profiles_dirs] if profiles_dirs is not None else None
+        )
         sc = getattr(self.cfg, "subagent", None)
         self.enabled = bool(getattr(sc, "enabled", True))
         self.default_max_turns = int(getattr(sc, "max_turns", 12) or 12)
@@ -764,14 +833,28 @@ class SubagentRunner:
 
     # ── 工具入口 ────────────────────────────────────────────
     def delegate(self, task: str, profile: str = "") -> str:
-        """注册成 `subagent` 工具的那个 `fn`。**不许抛异常**：
-        注册表会把异常当成"这次调用失败"回灌给模型，而模型据此会重发同一个调用。"""
+        """注册成 `subagent` 工具的那个 `fn`。**失败一定抛**（2026-11-14 改口径）。
+
+        旧实现「不许抛异常」是怕模型重发同一个调用，代价却是把派发失败、
+        `SubagentResult(ok=False)` 全拼成字符串返回 ⇒ ToolCall.ok=True
+        （假成功进证据门/统计）。现在两类失败都抛 `SubagentDispatchError`：
+        `run()` 抛异常、以及 `res.ok is False`（三条派发分支 + 子任务没成）。
+        注册表如实记 ok=False、error 带原因；重发由 loop.py 的
+        repeated_call 两段式收敛 + stall 终止兜底，失败文案也明确劝阻原样重发。
+        """
         try:
             res = self.run(task, profile)
         except Exception as e:                       # noqa: BLE001
-            return (f"⛔ 子代理没能起来：{type(e).__name__}: {e}\n"
-                    f"（这不是任务失败 —— 是派发这一步就失败了，"
-                    f"请自己接着做，或换一个 profile 再试一次。）")
+            raise SubagentDispatchError(
+                f"⛔ 子代理没能起来：{type(e).__name__}: {e}\n"
+                f"（这不是任务失败 —— 是派发这一步就失败了，"
+                f"请自己接着做，或换一个 profile 再试一次。）\n"
+                f"{_DISPATCH_HINT}") from e
+        if not res.ok:
+            raise SubagentDispatchError(
+                f"⛔ 子代理这次没成：{res.reason or res.as_text()}\n"
+                f"（不是工具调用成功 —— 请自己接着做，或换一个 profile 再试一次。）\n"
+                f"{_DISPATCH_HINT}")
         return res.as_text()
 
     # ── 主流程 ──────────────────────────────────────────────
@@ -864,6 +947,27 @@ class SubagentRunner:
         )
 
     # ── 助手 ────────────────────────────────────────────────
+    def discover_profiles(self) -> tuple[dict[str, SubagentProfile], list[Diagnosis]]:
+        """发现全部可用 profile：内置 + 目录中的自定义 `.md`（内置优先不被静默顶掉）。"""
+        catalog: dict[str, SubagentProfile] = dict(BUILTIN_PROFILES)
+        diags: list[Diagnosis] = []
+        dirs = (list(self._explicit_profile_dirs)
+                if self._explicit_profile_dirs is not None
+                else profile_dirs(self.cfg))
+        for d in dirs:
+            loaded, d_diags = load_profiles_from(d)
+            diags.extend(d_diags)
+            for p in loaded:
+                key = p.name.lower()
+                if key in catalog:
+                    diags.append(Diagnosis(
+                        "profile_duplicate_name",
+                        f"自定义 profile {p.name!r}（{p.source}）与已有同名，已跳过。",
+                        field="name", severity="warning"))
+                    continue
+                catalog[key] = p
+        return catalog, diags
+
     def _resolve_profile(self, profile: Any) -> SubagentProfile | None:
         # 调用方手上常见的就是 `parse_profile_md` 的返回值 —— 别逼他先拆一层。
         if isinstance(profile, ProfileParse):
@@ -880,7 +984,9 @@ class SubagentRunner:
         for p in BUILTIN_PROFILES.values():
             if p.name.lower() == low:
                 return p
-        return None
+        # 内置未命中时再从配置的自定义目录按 `load_profiles_from()` 解析
+        catalog, _diags = self.discover_profiles()
+        return catalog.get(low)
 
     def _make_workspace(self, name: str) -> Path:
         """`runs/subagent-<name>-<ts>/`。**不是**父级的工作区。"""
@@ -970,16 +1076,19 @@ class _Collector:
 def _prune_registry(registry: Any, allowed: list[str]) -> list[str]:
     """把子实例的工具表**收敛成 allowed**，返回被摘掉的名字。
 
-    ★ 这里动的是 `registry._tools`（一个私有字典），是**权衡后的选择**：
-      本刀的禁改清单不含 `tools.py`，而"允许清单"要成为**结构性保证**，
-      就必须让工具**既不出现在 schema 里、也不能被真的调起来**。
-      只在 `openai_schemas(allow=...)` 上过滤做不到后者 —— 模型凭记忆
-      发一个调用名，注册表照样会执行它。那就退化成"靠提示词嘱咐"，
-      而本工单第 4 节点名批评的正是这种退化。
-      干净的落点是给 `ToolRegistry` 加一个 `retain(names)`，
-      留到能改 `tools.py` 的那一刀。
+    优先走 `ToolRegistry.retain(allowed)` 公开方法；若传入轻量测试替身尚未实现
+    `retain`，则回退到原私有字典裁剪，确保平滑过渡且结构性剥离语义不变。
     ★ 动的是**子实例自己刚建出来的注册表**，父实例的注册表一个字节都没碰。
     """
+    retain_fn = getattr(registry, "retain", None)
+    if callable(retain_fn):
+        names_fn = getattr(registry, "names", None)
+        before = set(names_fn()) if callable(names_fn) else set()
+        ret = retain_fn(allowed)
+        if isinstance(ret, (list, tuple, set)):
+            return sorted(str(x) for x in ret)
+        after = set(names_fn()) if callable(names_fn) else set()
+        return sorted(before - after)
     table = getattr(registry, "_tools", None)
     if not isinstance(table, dict):
         return []

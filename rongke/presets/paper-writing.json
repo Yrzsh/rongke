@@ -78,6 +78,29 @@
       "config": {
         "compact_before_followup": true
       }
+    },
+    {
+      "op": "insert",
+      "id": "stage-brief",
+      "name": "@rongke/stage-brief",
+      "config": {
+        "skills": [
+          "uncertainty-and-units",
+          "workbench-paper-pitfalls",
+          "nature-writing",
+          "nature-polishing"
+        ],
+        "max_chars": 4000
+      }
+    },
+    {
+      "op": "insert",
+      "id": "source-alignment",
+      "name": "@rongke/tool-source-alignment",
+      "config": {
+        "expose": true,
+        "min_score": 0.55
+      }
     }
   ]
 }

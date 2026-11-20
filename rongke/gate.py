@@ -37,6 +37,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .contract import TaskContract, contract_wants_notes
+from .delivery_pipeline import (
+    CHARS_TOLERANCE as _CHARS_TOLERANCE,
+    DOCID_RE as _SHARED_DOCID_RE,
+    FIGURE_AUDIT_TOOLS as _SHARED_FIGURE_AUDIT_TOOLS,
+    find_outline_file,
+)
 from .stages import STAGE_BY_ID, available
 from .tools import ToolCall, ToolRegistry
 from .writing import Report, lint
@@ -173,13 +179,97 @@ _ACC_CITE_SCOPE_ONLY = re.compile(
 # —— 拿它去证明「无参考文献列表」就是超范围断言（L 型：声明 ≠ 事实）。
 _ACC_REF_WORD = re.compile(r"参考文献|文献列表|references?|bibliography", re.I)
 
-# 字数容差：与 contract 里承诺的 ±15% 保持一致，别再引入第二套阈值
-_CHARS_TOLERANCE = 15.0
+# 字数容差：单源住在 `delivery_pipeline.CHARS_TOLERANCE`（±15%），
+# `gate.py` 与 `process_feedback.py` 共享，不再两处各写一份。
 
-# 内核判据的三态。**必须三态**，理由见 _kernel_verdict 的长注释。
+# 内核判据的三态。**必须三态**，理由见 eval_kernel_verdict 的长注释。
 KERNEL_PASS = "pass"        # 内核实测：已达标
 KERNEL_FAIL = "fail"        # 内核实测：未达标（终审，不许上诉到措辞）
 KERNEL_UNKNOWN = "unknown"  # 内核判不了（才轮到措辞匹配）
+
+
+def eval_kernel_verdict(acc: str, rep: Report | None,
+                        caps=None) -> tuple[str, str]:
+    """纯只读的内核验收判定：这条验收标准，**内核自己**能不能判定？返回 `(三态, 说明文字)`。
+
+    抽为无副作用模块函数（不触碰 `CompletionGate` 实例、不耗打回额度），
+    供 `CompletionGate._kernel_verdict` 与过程反馈/只读消费者共享单源。
+    """
+    if rep is None:
+        return KERNEL_UNKNOWN, ""
+    m = rep.metrics or {}
+    a = _norm(acc)
+
+    ok_notes: list[str] = []
+    bad_notes: list[str] = []
+    judged = 0
+
+    # ① 字数
+    if _ACC_CHARS.search(a) and rep.target_chars:
+        judged += 1
+        d = abs(m.get("chars_delta_pct") or 0.0)
+        _du = (str(caps.flag("chars", "display_unit", "chars"))
+               if caps is not None else "chars")
+        txt = (f"{m.get(_du, m.get('chars', 0))} 字 vs 目标 {rep.target_chars} 字"
+               f"（偏差 {d:.0f}%，容差 ±{_CHARS_TOLERANCE:.0f}%）")
+        (ok_notes if d <= _CHARS_TOLERANCE else bad_notes).append(txt)
+
+    # ② 段落数
+    if _ACC_PARA.search(a) and m.get("paragraphs") is not None:
+        judged += 1
+        n = m.get("paragraphs")
+        (ok_notes if n else bad_notes).append(f"{n} 段")
+
+    # ③ 句数
+    if _ACC_SENT.search(a) and m.get("sentences") is not None:
+        judged += 1
+        n = m.get("sentences")
+        (ok_notes if n else bad_notes).append(f"{n} 句")
+
+    # ④ 引注：只判「有没有」，且只判全称否定式标准
+    if (_ACC_CITE_NEG.search(a) and _ACC_CITE_CATEGORICAL.search(a)
+            and not _ACC_CITE_META.search(a) and not _ACC_CITE_QUALITY.search(a)
+            and not _ACC_CITE_SCOPE_ONLY.search(a)
+            and m.get("citations") is not None):
+        judged += 1
+        cites = m.get("citations") or 0
+        wants_refs = bool(_ACC_REF_WORD.search(a))
+        refs = m.get("has_refs")
+        txt = f"{cites} 处引用标记"
+        if wants_refs and refs is not None:
+            txt += "、" + ("有参考文献表" if refs else "无参考文献表")
+        clean = cites == 0 and (not wants_refs or refs is None or not refs)
+        (ok_notes if clean else bad_notes).append(txt)
+
+    # ⑤ 预设点名的额外指标（Q2）+ 能力贡献规则
+    gate_cap = caps.inst("gate") if caps is not None else None
+    extra = list(gate_cap.extra_metrics()) if gate_cap is not None else []
+    wanted = set(extra)
+    _contrib = getattr(caps, "extra_rules", None)
+    _contributed = list(_contrib()) if callable(_contrib) else []
+    wanted |= {r[0] for r in _contributed}
+    for key, pat, mode, label in list(_EXTRA_RULES) + _contributed:
+        _pat = re.compile(pat) if isinstance(pat, str) else pat
+        if key not in wanted or not _pat.search(a) or key not in m:
+            continue
+        judged += 1
+        v = m.get(key) or 0
+        good = (v == 0) if mode == "eq0" else (v > 0)
+        txt = f"{label} {v} 处（要求 {'0' if mode == 'eq0' else '≥1'}）"
+        (ok_notes if good else bad_notes).append(txt)
+    key, pat, _mode, label = _EXTRA_ORDER
+    if key in wanted and pat.search(a) and key in m:
+        judged += 1
+        seq = list(m.get(key) or [])
+        good = seq == sorted(seq)
+        txt = f"{label} {seq[:12]}（{'符合' if good else '逆序'}）"
+        (ok_notes if good else bad_notes).append(txt)
+
+    if bad_notes:
+        return KERNEL_FAIL, "；".join(bad_notes)
+    if judged:
+        return KERNEL_PASS, "内核体检已达标：" + "；".join(ok_notes)
+    return KERNEL_UNKNOWN, ""
 
 
 @dataclass
@@ -247,8 +337,8 @@ class CompletionGate:
     LOADER_TOOLS = ("load_skill", "read_skill")
     # 能算"核验过引文"的工具（写作体检的引注联动用）
     CITE_TOOLS = ("verify_citation", "fetch_doi", "build_references")
-    # 能算"体检过图面"的工具（第 8 条图面门用）
-    FIGURE_TOOLS = ("audit_figure",)
+    # 能算"体检过图面"的工具（第 8 条图面门用，取自 delivery_pipeline 单源）
+    FIGURE_TOOLS = tuple(sorted(_SHARED_FIGURE_AUDIT_TOOLS))
     # 能算「显式走了预览路线」的工具（2026-11-05）。
     # ★ 它不是合格证：只有台账里**真出现过一次成功的 plot_svg**，
     #   才允许把第 8 条硬门降成警告。没调工具却自称「我出了预览图」不算。
@@ -274,12 +364,16 @@ class CompletionGate:
         self._writing_used = 0
         self.last_report: Report | None = None
         self._warn_seen: set[str] = set()
+        #: 这一轮稿面体检读的是哪一份稿（draft_path / draft_text），
+        #: 供判据与事件读回 —— 「读了半份稿」不能只靠推断。
+        self.last_draft_source = ""
 
     def reset(self) -> None:
         """每个任务开始时归零 —— 否则上一轮的打回额度会漏到下一轮。"""
         self._writing_used = 0
         self.last_report = None
         self._warn_seen = set()
+        self.last_draft_source = ""
 
     def _loaded_skills(self) -> set[str]:
         """台账里**成功**装载过的技能名。
@@ -425,123 +519,8 @@ class CompletionGate:
 
     # ── 内核自己的测量，充当验收证据 ────────────────────────
     def _kernel_verdict(self, acc: str, rep: Report | None) -> tuple[str, str]:
-        """这条验收标准，**内核自己**能不能判定？返回 `(三态, 说明文字)`。
-
-        三态：`pass`（实测已达标）/ `fail`（实测未达标）/ `unknown`（判不了）。
-
-        为什么必须是三态（2026-09-19 实测）：
-        原实现只有「达标 → 给文字；不达标 → 给空串」，于是
-        **实测不达标**与**判不了**长得一模一样 —— 两者都掉进措辞匹配。
-        后果是可复现的：草稿里 9 处引用标记、体检报告白纸黑字写着 `citations: 9`，
-        验收标准是「全文不含任何文献引用」，而模型只要把**这条标准的原文抄进
-        `evidence.acceptance`**，`_covers()` 精确命中，门就放行了 ——
-        **内核量出来的事实，被被审者的一句话推翻了。**
-
-        同一族的第二个实证：目标 150 字、实测 350 字（容差 ±15%），
-        模型声明「字数约150字」照样放行。
-
-        规矩一句话：**内核量得出来的，内核说了算；量不出来的才交回措辞。**
-        这正是 `_ACC_CHARS` 上方那条「能算的就不许靠匹配」——
-        原实现只让肯定侧成了终审，否定侧还能上诉，这里把否定侧补上。
-
-        刻意保守（与原来的口径一致）：
-        - 「字数够不够」只在**有目标字数**时可判，没有就不判；
-        - 引注只判**全称否定式**标准（全文/任何…不含引用），且一旦标准在谈
-          格式/条数/页码，就交回措辞匹配（内核不管格式）；
-        - 一个标准里能判的判据全判，**任一不达标即 fail**，与判据书写顺序无关。
-        """
-        if rep is None:
-            return KERNEL_UNKNOWN, ""
-        m = rep.metrics or {}
-        a = _norm(acc)
-
-        ok_notes: list[str] = []
-        bad_notes: list[str] = []
-        judged = 0
-
-        # ① 字数
-        if _ACC_CHARS.search(a) and rep.target_chars:
-            judged += 1
-            d = abs(m.get("chars_delta_pct") or 0.0)
-            _du = (str(self.caps.flag("chars", "display_unit", "chars"))
-                   if self.caps is not None else "chars")
-            txt = (f"{m.get(_du, m.get('chars', 0))} 字 vs 目标 {rep.target_chars} 字"
-                   f"（偏差 {d:.0f}%，容差 ±{_CHARS_TOLERANCE:.0f}%）")
-            (ok_notes if d <= _CHARS_TOLERANCE else bad_notes).append(txt)
-
-        # ② 段落数
-        if _ACC_PARA.search(a) and m.get("paragraphs") is not None:
-            judged += 1
-            n = m.get("paragraphs")
-            (ok_notes if n else bad_notes).append(f"{n} 段")
-
-        # ③ 句数
-        if _ACC_SENT.search(a) and m.get("sentences") is not None:
-            judged += 1
-            n = m.get("sentences")
-            (ok_notes if n else bad_notes).append(f"{n} 句")
-
-        # ④ 引注：只判「有没有」，且只判全称否定式标准
-        #    ★ 2026-10-15 修：必须先排除「这条标准其实在谈字数」。
-        #    实测事故（run 20261015-092001）：验收标准是
-        #      「正文汉字数在 12000–15000 之间（不含参考文献表）」
-        #    其中「不含参考文献表」同时命中 _ACC_CITE_NEG（不含+文献），
-        #    于是这条**字数**标准被 ④ 判到了**引注**上，要求 cites == 0。
-        #    后果：稿子只要有任何引用标记就恒 fail，模型永远无法达标 ——
-        #    它为此空转 205 步 / 6928 秒，日志里 5 次打回，每次「内核实测」
-        #    都只印出「N 处引用标记」而从不印字数。这是**不可能通过的门**。
-        #    判据：标准里若出现字数词，且否定语紧跟的是 参考文献/文献表
-        #    这类**篇幅限定语**，则 ④ 让位给 ①，不参与判定。
-        if (_ACC_CITE_NEG.search(a) and _ACC_CITE_CATEGORICAL.search(a)
-                and not _ACC_CITE_META.search(a) and not _ACC_CITE_QUALITY.search(a)
-                and not _ACC_CITE_SCOPE_ONLY.search(a)
-                and m.get("citations") is not None):
-            judged += 1
-            cites = m.get("citations") or 0
-            wants_refs = bool(_ACC_REF_WORD.search(a))
-            refs = m.get("has_refs")
-            txt = f"{cites} 处引用标记"
-            if wants_refs and refs is not None:
-                txt += "、" + ("有参考文献表" if refs else "无参考文献表")
-            clean = cites == 0 and (not wants_refs or refs is None or not refs)
-            (ok_notes if clean else bad_notes).append(txt)
-
-        # ⑤ 预设点名的额外指标（Q2）。只在 `gate-kernel` 能力实例的
-        #    `measured_metrics` 超出 baseline 6 项时才进来，且**每条规则
-        #    都要验收标准里出现对应触发词** —— 不许凭空给自己加标准。
-        gate_cap = self.caps.inst("gate") if self.caps is not None else None
-        extra = list(gate_cap.extra_metrics()) if gate_cap is not None else []
-        wanted = set(extra)
-        # ★ 2026-11-05 内核优化：额外判据不再只有内核里那 7 条硬编码表。
-        #   已挂载能力可贡献同形状的规则 (key, 正则, 模式, 标签)，于是
-        #   「加一条新判据 = 加能力 + 预设点名」，不必再改 gate.py。
-        #   贡献即点名：否则会出现「能力挂上了却没生效」这种假成功。
-        #   baseline 没有任何贡献 ⇒ 合并集与旧表逐字相等。
-        _contrib = getattr(self.caps, "extra_rules", None)
-        _contributed = list(_contrib()) if callable(_contrib) else []
-        wanted |= {r[0] for r in _contributed}
-        for key, pat, mode, label in list(_EXTRA_RULES) + _contributed:
-            _pat = re.compile(pat) if isinstance(pat, str) else pat
-            if key not in wanted or not _pat.search(a) or key not in m:
-                continue
-            judged += 1
-            v = m.get(key) or 0
-            good = (v == 0) if mode == "eq0" else (v > 0)
-            txt = f"{label} {v} 处（要求 {'0' if mode == 'eq0' else '≥1'}）"
-            (ok_notes if good else bad_notes).append(txt)
-        key, pat, _mode, label = _EXTRA_ORDER
-        if key in wanted and pat.search(a) and key in m:
-            judged += 1
-            seq = list(m.get(key) or [])
-            good = seq == sorted(seq)
-            txt = f"{label} {seq[:12]}（{'符合' if good else '逆序'}）"
-            (ok_notes if good else bad_notes).append(txt)
-
-        if bad_notes:
-            return KERNEL_FAIL, "；".join(bad_notes)
-        if judged:
-            return KERNEL_PASS, "内核体检已达标：" + "；".join(ok_notes)
-        return KERNEL_UNKNOWN, ""
+        """这条验收标准，**内核自己**能不能判定？委托给纯只读 `eval_kernel_verdict` 单源。"""
+        return eval_kernel_verdict(acc, rep, caps=self.caps)
 
     # ── 主判定 ──────────────────────────────────────────────
     def check(self, claim: CompletionClaim, contract: TaskContract) -> Verdict:
@@ -1125,19 +1104,8 @@ class CompletionGate:
     _RE_OUTLINE_HEAD = re.compile(
         r"^\s{0,3}(?:#{1,4}\s+\S|第[一二三四五六七八九十百\d]+[章节部分]\s*\S"
         r"|[一二三四五六七八九十]+\s*[、.．]\s*\S)", re.M)
-    #: doc_id / DOI 形态。这条判据要回答「这一章有没有绑定文献」，不是「ID 对不对」，
-    #: 所以取**宽**：判格式是 `verify_citation` 的活，不是这里的。
-    #:
-    #: ⚠️ 最初写成"`doi:` 前缀 + 后面整串"，实测漏掉了最常写的两种形态：
-    #:   `doc_id: 10.1038/abc`（前缀是 doc_id 不是 doi）与裸 DOI。
-    #:   而 `\b[0-9a-f]{8,}\b` 这类会**误吃** DOI 里的片段（`s41598-020-68112`），
-    #:   看着命中了、其实没对上整条 DOI。⇒ 改成先找 DOI 的**真实形状**
-    #:   （`10.\d{4,9}/<可见字符>`），再找 litkb 的 doc_id 形状。
-    _RE_DOCID = re.compile(
-        r"(?i)(?:10\.\d{4,9}/[^\s,，、;；)）\]】\"']+"
-        r"|\bkb[0-9a-z]{6,}\b"
-        r"|\b[0-9a-f]{8,}\b"
-        r"|\b[a-z]{2,}[0-9]{3,}\b)")
+    #: doc_id / DOI 形态（取自 `delivery_pipeline.DOCID_RE` 单源）。
+    _RE_DOCID = _SHARED_DOCID_RE
     #: 每章至少要绑几篇文献。1 是这个判据的下限 —— 要求更多会误伤
     #: "这一章只做概念界定、引一篇综述即可"这种合法写法。
     _OUTLINE_MIN_REFS = 1
@@ -1145,27 +1113,15 @@ class CompletionGate:
     def _check_outline(self) -> tuple[bool, str, dict]:
         """查工作区里的大纲。返回 `(是否过门, 问题说明, 统计)`。
 
-        ★ 为什么按文件名模糊找而不是要求固定叫 `outline.md`：
-          契约里让模型"产出 outline.md"，但它完全可能叫 `大纲.md`、
-          `03-大纲.md`。**要求精确文件名会把干对了的事判成没干**（这仓反复
-          付过这种代价）。所以按「文件名里带 outline 或 大纲」找。
-        ★ 为什么"多份"只取最新那份：中途改过大纲是正常的，
-          旧版留在盘上不该被当成问题。
+        使用 `delivery_pipeline.find_outline_file` 单源发现 `outline.md` /
+        `大纲.md` / `提纲.md`（多份取最新修改的一份）。
         """
         try:
             root = Path.cwd()
         except Exception:
             return True, "", {}
-        cands = []
-        try:
-            for p in root.rglob("*.md"):
-                n = p.name.lower()
-                if "outline" in n or "大纲" in p.name or "提纲" in p.name:
-                    if p.is_file():
-                        cands.append(p)
-        except Exception:
-            cands = []
-        if not cands:
+        p = find_outline_file(root, recursive=True)
+        if p is None:
             return False, (
                 "**没有找到大纲文件**。长综述必须先把结构冻结成文件再动笔 —— "
                 "这是本任务契约要求的（见「大纲与章-文献映射」那段）。\n"
@@ -1175,7 +1131,6 @@ class CompletionGate:
                 "为什么不能跳：写到第三节才发现第二节要改，会连带重写后文 ——"
                 "来回改两轮，稿子就烂了。"), {}
 
-        p = max(cands, key=lambda x: x.stat().st_mtime)
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception as e:                              # noqa: BLE001
@@ -1202,20 +1157,37 @@ class CompletionGate:
                and not sp[2].lstrip().startswith("##")]
         if _h1 and len(spans) - len(_h1) >= 2:
             spans = [sp for sp in spans if sp not in _h1]
+        # ★ 2026-11-09：章节分母从形状单源取，不再在这里用正则猜。
+        #   逐行复刻坐实过一次假红：7 章全绑 doc_id，门却把
+        #   「元数据与 DOI 处理规则」这个附录节切成第 9 章判空 ⇒ 凭空返工。
+        #   另外 `body.splitlines()[0]` 拿到的是 `(无标题)`，故按行号重截标题行。
+        from .shape import chapter_head_line, is_chapter_head
         idx = [a for a, _, _ in spans]
         per_chapter: list[dict] = []
         for i, (s, e_head, _raw) in enumerate(spans):
             e = idx[i + 1] if i + 1 < len(idx) else len(text)
             body = text[s:e]
             refs = set(m.group(0) for m in self._RE_DOCID.finditer(body))
-            title = body.splitlines()[0].strip()[:60] if body.strip() else ""
-            per_chapter.append({"title": title, "refs": len(refs)})
+            head_line = chapter_head_line(text, s)
+            title = (head_line[:60] or
+                     (body.splitlines()[0].strip()[:60] if body.strip() else ""))
+            per_chapter.append({"title": title, "refs": len(refs),
+                                "is_chapter": is_chapter_head(head_line)})
+        # 严格规则一条编号章都没认出（有人用 `## 引言` 这种合法写法）⇒
+        # 退回原宽松口径，绝不能把合法大纲判成「读不出章标题」的死门。
+        if not any(c["is_chapter"] for c in per_chapter):
+            for c in per_chapter:
+                c["is_chapter"] = True
         info = {
             "path": str(p),
             "chars": len(text),
             "chapters": len(idx),
+            "chapters_checked": sum(1 for c in per_chapter if c["is_chapter"]),
+            "skipped_non_chapter": [c["title"] for c in per_chapter
+                                    if not c["is_chapter"]][:10],
             "chapters_with_refs": sum(1 for c in per_chapter
-                                      if c["refs"] >= self._OUTLINE_MIN_REFS),
+                                      if c["is_chapter"]
+                                      and c["refs"] >= self._OUTLINE_MIN_REFS),
             "chapter_refs": per_chapter[:40],
         }
 
@@ -1226,7 +1198,9 @@ class CompletionGate:
                 "请把它写成 Markdown 标题结构（`## 第一章 …` 这种），"
                 "每章下面写清 论证 / doc_id 清单 / 目标字数 / 图表。"), info
 
-        bad = [c for c in per_chapter if c["refs"] < self._OUTLINE_MIN_REFS]
+        # 只核「章」；文档标题 / 参考文献核算 / 元数据规则等附录节不进分母。
+        bad = [c for c in per_chapter
+               if c["is_chapter"] and c["refs"] < self._OUTLINE_MIN_REFS]
         if bad:
             names = "、".join(c["title"] or "(无标题)" for c in bad[:6])
             return False, (
@@ -1242,31 +1216,57 @@ class CompletionGate:
 
     # ── 取正文 ──────────────────────────────────────────────
     def _draft_text(self, claim: CompletionClaim) -> tuple[str, str]:
-        """返回 (正文, 错误说明)。二者必有其一为空。"""
+        """返回 (正文, 错误说明)。二者必有其一为空。
+
+        ★ 11-07：判定面优先**落盘全文**。实测 D2 把 921 字正文塞进
+        `draft_text`、8 条文献表只在 1911 字落盘文件里 ⇒ 门量的是半份稿，
+        100 分与 `has_refs=0` 都由此而来（Q6）。
+
+        规则（不加严、只换读哪一份）：
+          · 文件读得到且 draft_text 是它的子串 ⇒ 用文件（含附表，最全）；
+          · draft_text 是更新版（不是子串）⇒ 用 draft_text，别量旧稿；
+          · 只有一份可用 ⇒ 用那份；路径坏而另一份可用 ⇒ 不硬拦。
+        """
         t = (claim.draft_text or "").strip()
-        if t:
-            return t, ""
         p = (claim.draft_path or "").strip()
-        if not p:
+        file_text = ""
+        file_err = ""
+        if p:
+            path = Path(p)
+            if path.is_absolute():
+                try:
+                    path.resolve().relative_to(Path.cwd().resolve())
+                except Exception:
+                    file_err = (f"draft_path 指向工作区之外（{p}）。请改用相对路径，"
+                                "把稿件写进本次任务的工作区里。")
+            if not file_err and not path.exists():
+                file_err = (f"draft_path={p} 指向的文件不存在。确认它是**相对本次任务工作区**"
+                            "的路径，且确实写进去了（不要用绝对路径或 ../ 绕出去）。")
+            if not file_err:
+                try:
+                    # 不 strip：落盘全文要**逐字节**进判定面，
+                    # 旧实现也没去尾部换行，别悄悄改稿子。
+                    file_text = path.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:                    # noqa: BLE001
+                    file_err = f"读取 draft_path={p} 失败：{type(e).__name__}: {e}"
+
+        if not t and not file_text:
+            if file_err:
+                return "", file_err
             return "", (
                 "这是**写作任务**，但交付里既没 draft_text 也没 draft_path —— "
                 "内核拿不到正文就做不了稿面体检（字数/结构/句长/套话/标点）。"
                 "短稿（≤2000 字）直接填 draft_text；长稿写进工作区文件，"
                 "再用 draft_path 指**相对本工作区**的路径。")
-        path = Path(p)
-        if path.is_absolute():
-            try:
-                path.resolve().relative_to(Path.cwd().resolve())
-            except Exception:
-                return "", (f"draft_path 指向工作区之外（{p}）。请改用相对路径，"
-                            "把稿件写进本次任务的工作区里。")
-        if not path.exists():
-            return "", (f"draft_path={p} 指向的文件不存在。确认它是**相对本次任务工作区**"
-                        "的路径，且确实写进去了（不要用绝对路径或 ../ 绕出去）。")
-        try:
-            return path.read_text(encoding="utf-8", errors="replace"), ""
-        except Exception as e:
-            return "", f"读取 draft_path={p} 失败：{type(e).__name__}: {e}"
+
+        if file_text and (not t or _norm(t) in _norm(file_text)):
+            self.last_draft_source = "draft_path"
+            return file_text, ""
+        if t:
+            self.last_draft_source = "draft_text"
+            return t, ""
+        self.last_draft_source = "draft_path"
+        return file_text, ""
 
     # ── 打回时对模型说的话 ──────────────────────────────────
     def _feedback(self, passed: bool, reasons: list[str], warnings: list[str],

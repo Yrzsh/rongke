@@ -23,6 +23,12 @@ include packaging/smoke_test.py
 include packaging/INSTALL-NOTES.txt
 include packaging/RELEASE_NOTES.md
 include tools/issue_code.py
+# 订阅 v2 发行侧（2026-11-06）：issue_code.py 顶层 import issuing_lib，
+# 少一份就会构建出「能装、但签发工具一跑就 ImportError」的 sdist。
+# 三份配套工具一起进，保证从源码重建的人拿到的是自洽的一套。
+include tools/issuing_lib.py
+include tools/order_new.py
+include tools/reconcile.py
 
 prune build
 prune dist

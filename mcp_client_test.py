@@ -220,8 +220,24 @@ try:
                "协议层" in msg, msg[:300])
     check("_payload_failure 认出 ok=false",
           _payload_failure(json.dumps({"ok": False, "error": "x"}), "ok"), "x")
-    check("_payload_failure 对 ok=true 不误报",
-          _payload_failure(json.dumps({"ok": True, "error": "x"}), "ok"), "")
+    # ── 判据口径变更（2026-11-14，就地改写，非静默删除）──────────────────
+    # ① 旧断言（本轮之前）把「见到 ok:true 就以自述为准、不看别的键」钉成了规格，
+    #    期望 `{"ok": true, "error": "x"}` 返回 "" 判成功 —— 这是**旧设计错误**。
+    #    这里不是「改断言迎合实现」：把同一条 check 的期望值从 "" 就地改成 "x"，
+    #    让口径变更留在原地、看得见。
+    # ② 实测冲突：web_extract 等外域失败载荷 `{"ok": true, "error": "外域抓取失败"}`
+    #    被旧实现当成成功返回 ⇒ MCPClient.call 不抛 ⇒ ToolCall.ok=True，假证据进证据门。
+    #    语义依据：**成功载荷不会写非空 error**，写了就是失败。
+    # ③ 「不误报」意图没丢：由下面 error:null / error:"" / 纯 data 三条负控承接，
+    #    口径仍收得极窄 —— 只认非空字符串 error（null/""/false/0/对象/数组都不算）。
+    check("_payload_failure 对 ok=true + 非空 error 不再误判成功",
+          _payload_failure(json.dumps({"ok": True, "error": "x"}), "ok"), "x")
+    check("ok:true + error:null 仍判成功（null 不算失败）",
+          _payload_failure(json.dumps({"ok": True, "error": None}), "ok"), "")
+    check("ok:true + 空串 error 仍判成功（空串不算失败）",
+          _payload_failure(json.dumps({"ok": True, "error": ""}), "ok"), "")
+    check("ok:true + data 正常载荷仍判成功（不去猜 data/result）",
+          _payload_failure(json.dumps({"ok": True, "data": {"n": 3}}), "ok"), "")
     check("_payload_failure 对普通文本不误判（不误报比不漏报重要）",
           _payload_failure("就是一段普通结论，没有 JSON", "ok"), "")
     check("_payload_failure 对非 JSON 的 { 开头也不崩",

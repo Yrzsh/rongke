@@ -363,3 +363,164 @@ def config_patch(preset: Preset | None) -> dict:
     if preset is None:
         return {}
     return {k: dict(v) for k, v in (preset.config or {}).items()}
+
+
+@dataclass(frozen=True)
+class ResolvedPreset:
+    """解析并合并后的单一预设真相（递归 `base` 链 → 目标预设 → 个人层）。
+
+    与 `Preset` 分工：`Preset` 保持老数据模型与 `to_dict()` 不变（兼容既有的
+    `preset_test.py` 等值断言）；本结构补齐 `base_chain` 与可直接交给
+    `caps.assemble()` 的 `layers`，同时保留合并后的 `config`/`stages`/`scenes`。
+    """
+    preset: Preset
+    base_chain: tuple[str, ...] = ()
+    layers: tuple[dict, ...] = ()
+    personal_applied: bool = False
+
+    @property
+    def id(self) -> str:
+        return self.preset.id
+
+    @property
+    def name(self) -> str:
+        return self.preset.name
+
+    @property
+    def scenes(self) -> list[str]:
+        return list(self.preset.scenes)
+
+    @property
+    def stages(self) -> list[str]:
+        return list(self.preset.stages)
+
+    @property
+    def config(self) -> dict:
+        return {k: dict(v) for k, v in (self.preset.config or {}).items()}
+
+    def config_patch(self) -> dict:
+        return config_patch(self.preset)
+
+
+def resolve_preset(pid: str, *, directory: Path | None = None,
+                   home: Path | None = None,
+                   scene_keys: tuple[str, ...] = SCENE_KEYS,
+                   stage_ids: tuple[str, ...] = tuple(STAGE_BY_ID),
+                   known_domains: set[str] | None = None,
+                   known_blocks: set[str] | None = None
+                   ) -> tuple[ResolvedPreset | None, str]:
+    """按 id 解析一份完整预设：递归 `base`（含环检测）→ 预设本体 → 个人覆盖层。
+
+    - 只读目标预设及其 `base` 链，不再扫描整目录（避免无关坏文件污染错误原因，
+      也让 `all_presets_health()` 从 O(N²) 降回 O(N)）。
+    - 非 `plugins` 字段沿 `base` 链从根到叶合并（`config` 深合并，其余子层覆写）；
+      个人层 `presets.<id>` 同时支持覆写 `plugins`（未写 `op` 默认 `patch`）与
+      `config`/`stages`/`scenes` 等元数据，合并后统一复核 `validate()`。
+    """
+    target = str(pid or "").strip()
+    if not target:
+        return None, "预设 id 不能为空"
+    d = Path(directory) if directory is not None else presets_dir()
+    if not d.is_dir():
+        return None, f"预设目录不存在：{d}"
+    leaf_path = d / f"{target}.json"
+    if not leaf_path.is_file():
+        avail = sorted(p.stem for p in d.glob("*.json"))
+        return None, f"预设 {target!r} 不可用：目录里没有这个 id（可用 {avail}）"
+
+    chain_rev: list[tuple[str, Path, dict]] = []
+    seen: set[str] = set()
+    walk_ids: list[str] = []
+    cur_id = target
+    while True:
+        if cur_id in seen:
+            return None, "base 继承存在循环：" + " → ".join(walk_ids + [cur_id])
+        cur_path = d / f"{cur_id}.json"
+        if not cur_path.is_file():
+            return None, f"base 层 {cur_id!r} 不存在（{cur_path}）"
+        try:
+            raw = json.loads(cur_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return None, f"读取失败 {cur_path.name}: {e}"
+        why = validate(raw, stem=cur_id, scene_keys=scene_keys,
+                       stage_ids=stage_ids, known_domains=known_domains,
+                       known_blocks=known_blocks)
+        if why:
+            prefix = "预设文件校验失败：" if cur_id == target else f"base 层 {cur_id!r} 校验失败："
+            return None, prefix + why
+        seen.add(cur_id)
+        walk_ids.append(cur_id)
+        chain_rev.append((cur_id, cur_path, raw))
+        nxt = str(raw.get("base") or "").strip()
+        if not nxt:
+            break
+        cur_id = nxt
+
+    chain = list(reversed(chain_rev))
+    merged_meta: dict = {}
+    layers: list[dict] = []
+    for _cid, cpath, raw in chain:
+        meta_part = {k: v for k, v in raw.items() if k not in ("plugins", "base")}
+        merged_meta = merged_dict(merged_meta, meta_part)
+        layer_entry = dict(raw)
+        layer_entry["source"] = cpath.name
+        layers.append(layer_entry)
+
+    # 身份字段只认目标叶预设，避免子预设省略 description/name 时错借 base 文案。
+    leaf_raw = chain[-1][2]
+    merged_meta["id"] = target
+    merged_meta["name"] = leaf_raw.get("name", "") or target
+    merged_meta["description"] = leaf_raw.get("description", "")
+    merged_meta["order"] = int(leaf_raw.get("order", 100))
+
+    personal_applied = False
+    try:
+        sec = personal_layer(home)
+    except PresetError as e:
+        return None, f"个人层不合法：{e}"
+    p_layer = sec.get(target)
+    if p_layer is not None:
+        if not isinstance(p_layer, dict):
+            return None, f"个人层 presets.{target} 必须是对象，实际是 {type(p_layer).__name__}"
+        personal_applied = True
+        p_meta = {k: v for k, v in p_layer.items() if k != "plugins"}
+        if p_meta:
+            merged_meta = merged_dict(merged_meta, p_meta)
+            why = validate(merged_meta, stem=target, scene_keys=scene_keys,
+                           stage_ids=stage_ids, known_domains=known_domains,
+                           known_blocks=known_blocks)
+            if why:
+                return None, why + "（含个人层覆盖后的结果）"
+        if "plugins" in p_layer:
+            raw_plugins = p_layer.get("plugins")
+            if raw_plugins is not None and not isinstance(raw_plugins, list):
+                return None, (f"个人层 presets.{target}.plugins 必须是列表，"
+                              f"实际是 {type(raw_plugins).__name__}")
+            rows = []
+            for r in (raw_plugins or []):
+                row = dict(r) if isinstance(r, dict) else {}
+                row.setdefault("op", "patch")
+                rows.append(row)
+            if rows:
+                layers.append({"source": "personal", "plugins": rows})
+
+    pr = merged_meta.get("prompt") or {}
+    preset = Preset(
+        id=target,
+        name=str(merged_meta.get("name", "") or target),
+        description=str(merged_meta.get("description", "")),
+        order=int(merged_meta.get("order", 100)),
+        scenes=list(merged_meta.get("scenes") or []),
+        stages=list(merged_meta.get("stages") or []),
+        mount=list(merged_meta.get("mount") or []),
+        config={k: dict(v) for k, v in (merged_meta.get("config") or {}).items()},
+        block=str(pr.get("block") or ""),
+        exemplars=list(merged_meta.get("exemplars") or []),
+        tier=str(merged_meta.get("tier") or ""),
+    )
+    return ResolvedPreset(
+        preset=preset,
+        base_chain=tuple(cid for cid, _, _ in chain),
+        layers=tuple(layers),
+        personal_applied=personal_applied,
+    ), ""

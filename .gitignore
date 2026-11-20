@@ -242,4 +242,12 @@ docs/**/_preview/
 /vendor/Supervisor.skill/
 /.zcodeignore
 
+# ── 订阅 v2 发行侧台账（2026-11-06）────────────────────────
+# 含客户名 / 邮箱 / 订单号，只应落在 ~/.rongke/issuing/。
+# 这几条是防御性的：万一有人把 --orders / --ledger 指到仓库里，
+# 也不会把客户资料提交出去（判据用 runs/ 临时目录，已被上面忽略）。
+/tools/*.jsonl
+**/orders.jsonl
+**/issued.jsonl
+
 

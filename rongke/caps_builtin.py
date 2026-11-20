@@ -166,6 +166,19 @@ class ToolMount(Capability):
         return [f"refresh={cfg['refresh']}", f"domains={len(cfg['initial_domains'])}",
                 f"schema预算={'不限' if _b <= 0 else str(_b)}"]
 
+    def domains(self) -> list[str]:
+        """本场预设声明的初始工具挂载域清单（去重保序）。"""
+        out: list[str] = []
+        for d in (self.cfg.get("initial_domains") or []):
+            s = str(d or "").strip()
+            if s and s not in out:
+                out.append(s)
+        return out
+
+    @property
+    def initial_domains(self) -> list[str]:
+        return self.domains()
+
     def schemas_for(self, registry, allow, step: int = 0, stage: str = "",
                     essential=()):
         """★ 可刷新接口：`once` 时每步返回**同一个 list 对象**，零额外开销，
@@ -226,6 +239,8 @@ class ContextCompact(Capability):
     id = "context-compact"
     kind = "context"
     version = "1.0.0"
+    BASELINE_TARGET_CHARS = 120000
+    BASELINE_KEEP_LIVE = 6
     config_schema = {
         "target_chars": {"type": "int", "min": 10000, "max": 500000, "required": True},
         "compact_before_followup": {"type": "bool", "required": True},
@@ -236,6 +251,24 @@ class ContextCompact(Capability):
         self.cfg = cfg
         return [f"target={cfg['target_chars']}",
                 "追问先脱水" if cfg["compact_before_followup"] else "追问先发后压"]
+
+    def effective_target_chars(self, cfg_default: int, *, preset_id: str = "") -> int:
+        """解析最终压缩阈值：baseline 未改写时尊重用户 `config.json`（含 `0` 关闭）。
+
+        非 baseline 预设（如 `lit-verify`=80000 / `strict-v2`=60000）或用户经个人层
+        把 `baseline` 改成非基线值时，才覆盖 `cfg_default`。
+        """
+        val = int(self.cfg["target_chars"])
+        if str(preset_id or "").strip() in ("", "baseline") and val == self.BASELINE_TARGET_CHARS:
+            return int(cfg_default)
+        return val
+
+    def effective_keep_live(self, cfg_default: int, *, preset_id: str = "") -> int:
+        """解析压缩保留条数：仅在预设显式偏离默认值时覆盖 `cfg_default`。"""
+        val = int(self.cfg.get("keep_live", self.BASELINE_KEEP_LIVE))
+        if val == self.BASELINE_KEEP_LIVE:
+            return int(cfg_default)
+        return val
 
 
 @register("@rongke/tool-writing-metrics")
@@ -257,21 +290,22 @@ class WritingMetricsTool(Capability):
         if registry is None:
             return ["已声明暴露，但本轮没有 registry（只读挂载检查）"]
         from .tools import Tool
-        from .writing import lint
+        from .process_feedback import build_feedback
 
         def _fn(text: str = "", target_chars: int | None = None, **_kw) -> str:
-            # P1 之前 `lint` 还没有 caps 形参；兼容写法让这条工具在接线
-            # 中间态也能用，不把「半成品」变成运行时异常。
-            try:
-                rep = lint(text, target_chars=target_chars, caps=ctx.get("caps"))
-            except TypeError:
-                rep = lint(text, target_chars=target_chars)
-            want = cfg["metrics"]
-            m = rep.metrics
-            picked = {k: m.get(k) for k in want if k in m}
-            return ("【稿面体检 · 内核实测】\n"
-                    + "\n".join(f"{k}={v}" for k, v in picked.items())
-                    + "\n\n" + rep.format_for_model())
+            # ★ 11-07：一次回灌「还差什么」+ 全量指标，而不是只给 5 个数
+            #   让模型自己外推（D2 实测它为此调了 5 次）。数据源仍是 lint()。
+            fb = build_feedback(text, target_chars=target_chars,
+                                caps=ctx.get("caps"))
+            m = fb["metrics"]
+            # 预设点名的指标排前面，其余 34 项一次给齐。
+            picked = {k: m[k] for k in cfg["metrics"] if k in m}
+            rest = {k: v for k, v in m.items() if k not in picked}
+            return (fb["text"] + "\n\n"
+                    + "【全量指标 · 内核实测】\n"
+                    + "\n".join(f"{k}={v}" for k, v in {**picked, **rest}.items())
+                    + "\n\n【人话报告（启发式项仅供参考，不阻断交付）】\n"
+                    + fb["human"])
 
         # ★ 原本就有同名工具 ⇒ 它属于别人（第三方插件 / 内核开机预设）。
         #   既不覆盖、也不登记撤销：否则 run() 收尾会把别人的工具撤掉。
@@ -280,8 +314,9 @@ class WritingMetricsTool(Capability):
         try:
             registry.register(Tool(
                 name="writing_metrics",
-                description=("量当前稿件的字数/引注/套话等指标，返回内核实测值。"
-                             "改稿前后各调一次，不要自己估算字数或比值。"),
+                description=("一次读回当前稿件的全量实测指标与「还差什么」的差异摘要。"
+                             "贴入稿件全文即可；内核自己算，不要手算字数或比值，"
+                             "也不必反复调用。"),
                 parameters={"type": "object",
                             "properties": {
                                 "text": {"type": "string", "description": "稿件全文"},
@@ -294,6 +329,77 @@ class WritingMetricsTool(Capability):
         #   Rongke.run() 的 finally 按这份清单撤销，预设就真的只管这一场。
         ctx.setdefault("registered_tools", []).append("writing_metrics")
         return [f"writing_metrics({','.join(cfg['metrics'])})"]
+
+
+@register("@rongke/tool-source-alignment")
+class SourceAlignmentTool(Capability):
+    """把「这条引注有没有出处」做成**写之中**能主动查的读回。
+
+    与门的分工：只给事实、不下判决。`source_alignment` 的三态里
+    `unknown` 绝不等于「你编了」；查完不满意模型自己改稿，不产生打回。
+    """
+    id = "tool-source-alignment"
+    kind = "tool"
+    version = "1.0.0"
+    config_schema = {
+        "expose": {"type": "bool", "required": True},
+        "min_score": {"type": "float", "required": True, "min": 0.0, "max": 1.0},
+    }
+
+    def mount(self, cfg, ctx):
+        self.cfg = cfg
+        if not cfg["expose"]:
+            return ["未暴露（引文对齐只留内核 API）"]
+        registry = ctx.get("registry")
+        if registry is None:
+            return ["已声明暴露，但本轮没有 registry（只读挂载检查）"]
+        from .tools import Tool
+        from .source_alignment import align
+
+        def _fn(text: str = "", sources: str = "", read_docs=None,
+                searched_docs=None, **_kw) -> str:
+            import json
+            r = align(text or "", sources=sources or None,
+                      read_docs=read_docs, searched_docs=searched_docs,
+                      min_score=cfg["min_score"])
+            return (r["text"] + "\n\n【结构化台账 · 内核实测】\n"
+                    + json.dumps({"summary": r["summary"], "items": r["items"]},
+                                 ensure_ascii=False, indent=1))
+
+        if registry.get("source_alignment") is not None:
+            return ["source_alignment 已由其他来源注册（不覆盖、不撤销）"]
+        try:
+            registry.register(Tool(
+                name="source_alignment",
+                description=(
+                    "核对稿件里每条引注的出处：① 本次有没有真读过该文献 "
+                    "② 拿不拿得到那一页原文 ③ 稿件句能否在原文里找到支撑句。"
+                    "贴入稿件全文；把 kb_read / kb_search 的回包 JSON 贴进 sources "
+                    "即可做内容级比对，留空则只核出处记录。"
+                    "⚠️ 三态：判不了 ≠ 不符合；对齐只证明有文本可支撑，"
+                    "不判结论对错。本读回不阻断交付，不必为它反复调用。"),
+                parameters={"type": "object",
+                            "properties": {
+                                "text": {"type": "string",
+                                         "description": "稿件全文（含参考文献表）"},
+                                "sources": {"type": "string",
+                                            "description": "库内原文的 JSON 字符串："
+                                                           "{doc_id: 全文} 或 "
+                                                           "[{doc_id,page_no,text}]；留空只核出处"},
+                                "read_docs": {"type": "array",
+                                              "items": {"type": "string"},
+                                              "description": "本次 kb_read 真读过的 doc_id"},
+                                "searched_docs": {"type": "array",
+                                                  "items": {"type": "string"},
+                                                  "description": "仅 kb_search 命中过的 doc_id"},
+                            },
+                            "required": ["text"]},
+                fn=_fn, domain="core", source="builtin"))
+        except Exception as e:                                  # noqa: BLE001
+            raise RuntimeError(
+                f"注册 source_alignment 失败：{type(e).__name__}: {e}") from e
+        ctx.setdefault("registered_tools", []).append("source_alignment")
+        return [f"source_alignment(min_score={cfg['min_score']})"]
 
 
 @register("@rongke/prompt-sections")
@@ -347,6 +453,42 @@ class PromptSections(Capability):
             #   能力若自带 `SYSTEM_COMPLETE` 全文，则优先用那份全文。
             out.append("complete=true 已接线：system 骨架＝常驻节"
                        + (f"＋保留 {keep}" if keep else "（可选节全丢）"))
+        return out
+
+
+@register("@rongke/stage-brief")
+class StageBrief(Capability):
+    """写作前把阶段技能入口正文**确定性**前置，替代模型自己多次 load_skill。
+
+    ⚠️ 与 `stage-skill-gate` 的分工要分清：那道门按用户要求只做**软警告**
+    （W36：装技能是行为要求，没做不该被拒交付）。这里不做门、不加严，
+    只负责「写之前规范已经在眼前」—— 省的是往返与打回，不是拦人。
+    """
+
+    id = "stage-brief"
+    kind = "prompt"
+    version = "1.0.0"
+    config_schema = {
+        # 必填、无默认值：不点名技能 = 不许悄悄等价于「全给」；
+        # 预算也没有默认值，避免有人以为「前置」没有成本。
+        "skills": {"type": "list", "item_type": "str", "required": True,
+                   "hint": "本任务阶段技能的入口文档名，如 nature-writing"},
+        "max_chars": {"type": "int", "required": True,
+                      "hint": "整份简报的字符预算（含标题与缺件说明）"},
+    }
+
+    #: 通用消费点。`loop.initial_messages` 读 contributions("STAGE_BRIEF")。
+    #: 空 dict / text 为空 ⇒ 不往 system 里加一个字（baseline 逐字节等价）。
+    STAGE_BRIEF: dict = {}
+
+    def mount(self, cfg, ctx):
+        from .stage_brief import build_brief
+        rep = build_brief(cfg["skills"], cfg["max_chars"])
+        self.STAGE_BRIEF = rep
+        out = [f"写作前置简报：注入 {len(rep['injected'])} 份 / "
+               f"{rep['chars']} 字符"]
+        if rep["missing"]:
+            out.append("缺件（未注入、不判坏件）：" + "、".join(rep["missing"]))
         return out
 
 

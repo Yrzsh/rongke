@@ -180,7 +180,9 @@ def _anchors_text(tc: Any) -> str:
     except Exception:
         return "锚点抽取失败"
     parts = []
-    for k in ("doi", "url", "numbers"):
+    # ★ 键名必须与 extract_anchors 的输出一致（"num" 不是 "numbers"）——
+    #   原先写 "numbers" 永远取空，替身里的数值锚点静默缺席（2026-11-07 修）。
+    for k in ("doi", "url", "num"):
         v = a.get(k) or []
         if v:
             parts.append(f"{k}={','.join(str(x) for x in v[:6])}")

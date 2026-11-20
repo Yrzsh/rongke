@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import os
 import re
 import sys
 import tempfile
@@ -85,8 +86,21 @@ def main() -> int:
     (same / "draft.md").write_text("同一段稿子", encoding="utf-8")
     check("final 与落盘同稿 ⇒ 只收一次（不把一处出处算成两处）",
           len(L.collect_delivery_text("同一段稿子", same)[0]), 1)
-    check("负控：root=None 时只有聊天答复一段",
-          len(L.collect_delivery_text("答复", None)[0]), 1)
+    # ★ 2026-11-09 语义变更（真跑坐实，不是迎合实现）：`root=None` 原先
+    #   返回 []，使 6 个未完成分支里 5 个在盘上有 9495 字稿件时仍答复
+    #   「（本轮没有正文落盘）」。现在由 shape.prose_files 兜底到 cwd。
+    #   旧负控的前提已失效 ⇒ 改成「显式空目录」保持负控语义，
+    #   并补一条正控：root=None 必须真的读回落盘稿。
+    empty = Path(tempfile.mkdtemp(prefix="kbmentor_audit_empty_"))
+    check("负控：显式空目录 ⇒ 只有聊天答复一段",
+          len(L.collect_delivery_text("答复", empty)[0]), 1)
+    _cwd = Path.cwd()
+    try:
+        os.chdir(td)   # td 里已写 kb_summary.md（本段上方）
+        check("正控：root=None 兜底 cwd ⇒ 读回已落盘正文",
+              len(L.collect_delivery_text("答复", None)[0]) >= 2, True)
+    finally:
+        os.chdir(_cwd)
 
     print("\n── 3. 行为触发：开关不再决定「要不要诚实」 ──")
     hit = json.dumps({"hits": [{"doc_id": "kb12345678", "page": 1}]},

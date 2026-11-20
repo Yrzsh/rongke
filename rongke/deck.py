@@ -371,16 +371,21 @@ _DENSITY_CHROME_PREFIX = ("rk-", "juanqing-footer")
 _DENSITY_CHROME_PH = ("sldNum", "dt", "ftr")
 
 
-def _text_width_emu(txt: str, pt: float) -> float:
-    """粗略文本宽度（EMU）：**全角 1.0 em、ASCII 0.55 em**，其余按全角算。
+def text_advance_em(txt: str) -> float:
+    """文本前进宽度（em）：**全角 1.0 em、ASCII 0.55 em**，其余按全角算。
 
     为什么不一律按全角：那会把**英文稿**的每行容量低估近一半，
     于是英文 deck 集体报「溢出」—— 纯误报。反之一律按 0.55 又会漏掉中文。
+
+    ★ 单源：deck 的溢出估算器与 `svgq` 的 SVG 文字容纳/碰撞门共用这一份口径。
+      别在第二处重写 —— 0.55/1.0 这个分界是踩过英文稿集体误报才定下来的。
     """
-    em = 0.0
-    for ch in txt:
-        em += 0.55 if ord(ch) < 0x2E80 else 1.0
-    return em * pt * _EMU_PER_PT
+    return sum(0.55 if ord(ch) < 0x2E80 else 1.0 for ch in txt)
+
+
+def _text_width_emu(txt: str, pt: float) -> float:
+    """粗略文本宽度（EMU）。口径单源见 `text_advance_em`。"""
+    return text_advance_em(txt) * pt * _EMU_PER_PT
 
 
 def _sp_overflow(node: ET.Element, chain=None, part: int = 0,

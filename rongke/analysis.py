@@ -1729,52 +1729,147 @@ _BODY: dict[str, str] = {
 }
 
 
+#: 「成稿默认」的语义词典。列名本身就在说"这是有序轴 / 主测量"，
+#: 而 `recommend()` 只看列形状（连续 / 分类 / 时间），回答不了"这张表想说什么"。
+#: 只在 AI 一个轴参数都不给时启用；显式传参一律尊重。
+_AXIS_WORDS = ("批次", "序号", "编号", "时间", "日期", "月份", "期数",
+               "轮次", "阶段", "batch", "time", "date", "day", "month",
+               "year", "stage", "index", "week", "hour")
+_MEASURE_WORDS = ("率", "产量", "浓度", "表达", "含量", "活性", "得率",
+                  "rate", "yield", "count", "score", "level", "content", "amount")
+_MAX_GROUP_LEVELS = 6
+
+
+def _finish_default(cols: list[Column]) -> dict | None:
+    """AI 什么都不给时，按**列语义**把图型与轴一次定对。
+
+    实测（finish_lab/out/before）：`批次/组别/转化率/温度/产量` 被旧默认
+    画成「温度 by 转化率」散点，12 个批次塞进 6 色「第1…」图例，
+    结构自检 14 项全绿、七道门也过 —— 成品却与初稿题注完全不符。
+    形状判据没有错，是它答不了语义；这里补那层，不动 `recommend()` 单源。
+    """
+    nums = [c for c in cols if c.is_numeric]
+    cats = [c for c in cols if c.is_category]
+    times = [c for c in cols if c.is_time]
+    if not nums:
+        return None
+    axis = next((c for c in (times + cats)
+                 if any(w in c.name.lower() for w in _AXIS_WORDS)), None)
+    if axis is None and times:
+        axis = times[0]
+    if axis is None and cats:
+        # 列名不带序语义，但有分类列 + 数值列时，答案仍是「按类对比」，
+        # 不该退化成单变量直方图。类别数再决定 bar / line（见下）。
+        axis = cats[0]
+    measure = next((c for c in nums
+                    if any(w in c.name.lower() for w in _MEASURE_WORDS)), None) \
+        or nums[0]
+    if measure is axis:
+        measure = next((c for c in nums if c is not axis), None)
+    if measure is None:
+        return None
+    # 分组只认低基数列：12 个批次当分组 = 6 个「第1…」的假图例。
+    levels = [c for c in cats
+              if 2 <= c.n_unique <= _MAX_GROUP_LEVELS and c is not axis]
+    group = levels[0].name if levels else ""
+    if axis is not None:
+        # 有序轴上**不自动分组**：「组别」这类列常只是每行的属性，
+        # 硬拆成两条系列会把一条趋势锯成交错的锯齿（实测踩过）。
+        # 类别超过 8 个改折线：89mm 单栏装不下 12 个中文刻度，
+        # 柱状图会变成「12 根柱只标 6 个标签」，读者会误读。
+        kind = ("line" if (axis.is_time or axis.is_numeric
+                           or axis.n_unique > 8) else "bar")
+        return {
+            "kind": kind, "x": axis.name, "y": measure.name, "group": "",
+            "why": f"「{axis.name}」是有序轴、「{measure.name}」是主测量 —— "
+                   f"按序轴画{'趋势' if kind == 'line' else '对比'}，"
+                   "而不是拿两个连续列做相关散点。",
+        }
+    return {
+        "kind": "scatter" if len(nums) >= 2 else "hist",
+        "x": nums[0].name,
+        "y": nums[1].name if len(nums) >= 2 else nums[0].name,
+        "group": group,
+        "why": "没有有序轴，保留两个连续列的分布关系；高基数列不作分组。",
+    }
+
+
+def _default_title(kind: str, x: str, y: str) -> str:
+    """图题兜底说中文，不吐 `温度 by 转化率` 这种中英混搭。"""
+    if not y:
+        return "数据分布"
+    if kind in ("line", "time_series", "area", "errorband"):
+        return f"{y}随{x}的变化趋势" if x else f"{y}的变化趋势"
+    if kind == "scatter":
+        return f"{y}与{x}的关系" if x else f"{y}的分布"
+    if kind in ("bar", "barh", "stacked_bar", "box", "dotplot"):
+        return f"{y}按{x}对比" if x else f"{y}对比"
+    return f"{y} 的分布"
+
+
 def plan_from_shape(table: str, meta: dict, cols: list[Column], *,
                     kind: str = "", x: str = "", y: str = "", group: str = "",
                     title: str = "", stem: str = "",
                     width_mm: float = COL_WIDTH_MM) -> dict:
     """把"建议"落成一份**可直接执行**的 plan。
 
-    没指定 `kind` 就用第一条建议；建议为空 ⇒ 抛错并说清为什么（不许瞎画）。
+    AI 一个轴参数都没给 ⇒ 先走 `_finish_default()` 一次定对；显式传了任何
+    轴参数就完全尊重调用者。没建议又不适用语义默认 ⇒ 抛错并说清为什么。
     """
     sug = recommend(cols)
+    # `group` 不参与判定：工具按行实测出真多系列时会显式传 group，
+    # 此时图型与有序轴仍该走语义默认，不能退回「只按列形状猜」。
+    fd = _finish_default(cols) if not any((kind, x, y)) else None
     if not kind:
-        if not sug:
+        if fd:
+            kind = fd["kind"]
+        elif not sug:
             raise ValueError(
                 "这张表里没有可画的组合：" + "；".join(
                     f"{c.name}={c.kind}" for c in cols)
                 + "。至少要有 1 个连续列，或 1 个分类列 + 1 个连续列。")
-        kind = sug[0].kind
+        else:
+            kind = sug[0].kind
     if kind not in CHART_KINDS:
         raise ValueError(f"不认识的图型：{kind}")
     pick = next((s for s in sug if s.kind == kind), None)
     nums = [c for c in cols if c.is_numeric]
     cats = [c for c in cols if c.is_category]
     times = [c for c in cols if c.is_time]
-    x = x or (pick.x if pick else "")
-    y = y or (pick.y if pick else "")
-    group = group or (pick.group if pick else "")
-    if not x:
-        # ★ 兜底顺序要看**这个图型的 x 是什么语义**，不能一律"时间列优先"。
-        #   实测踩过：hist 的 x 是"被统计分布的那一列数值"，可是通用兜底
-        #   把 `date`（时间列）填了进去 —— 脚本拿 date 去做数值清洗，
-        #   全列非数值 ⇒ 清洗后 0 行 ⇒ **脚本报错、没有 PDF**。
-        #   在 clean_num 之前这个缺陷是隐形的：旧 clean() 会静默画一张空直方图，
-        #   退出码 0、PDF 有内容（只是空的），六道门也看不出"没画东西"。
-        #   所以兜底必须按图型分派：直方图只可能拿数值列。
-        if kind == "hist":
-            x = nums[0].name if nums else ""
-        else:
-            x = (times or cats or nums or [None])[0].name if (times or cats or nums) else ""
-    if not y:
-        y = nums[0].name if nums else ""
-    # 有分类列就默认按它分组 —— 时间序列尤其必须：
-    # 不分组的折线会把两个组的点串成一条来回折返的线（实测踩过）。
-    if not group:
-        group = cats[0].name if cats else ""
+    if fd:
+        x, y = fd["x"], fd["y"]
+        group = group or fd["group"]
+        why = fd["why"]
+    else:
+        x = x or (pick.x if pick else "")
+        y = y or (pick.y if pick else "")
+        group = group or (pick.group if pick else "")
+        why = pick.why if pick else ""
+        if not x:
+            # ★ 兜底顺序要看**这个图型的 x 是什么语义**，不能一律"时间列优先"。
+            #   实测踩过：hist 的 x 是"被统计分布的那一列数值"，可是通用兜底
+            #   把 `date`（时间列）填了进去 —— 脚本拿 date 去做数值清洗，
+            #   全列非数值 ⇒ 清洗后 0 行 ⇒ **脚本报错、没有 PDF**。
+            #   在 clean_num 之前这个缺陷是隐形的：旧 clean() 会静默画一张空直方图，
+            #   退出码 0、PDF 有内容（只是空的），六道门也看不出"没画东西"。
+            #   所以兜底必须按图型分派：直方图只可能拿数值列。
+            if kind == "hist":
+                x = nums[0].name if nums else ""
+            else:
+                x = ((times or cats or nums or [None])[0].name
+                     if (times or cats or nums) else "")
+        if not y:
+            y = nums[0].name if nums else ""
+        # 有分类列就默认按它分组 —— 时间序列尤其必须：
+        # 不分组的折线会把两个组的点串成一条来回折返的线（实测踩过）。
+        if not group:
+            group = cats[0].name if cats else ""
     return {
         "kind": kind, "table": str(table), "x": x, "y": y, "group": group,
-        "title": title or f"{y} by {x}" if (x and y) else (title or ""),
+        "title": title or _default_title(kind, x, y),
+        # 「工具兜底的图题」不上图面：期刊插图的标题在图注里，
+        # 图上再写一遍就是重复。AI 显式给了 title 才画上去。
+        "title_auto": not bool(title),
         "xlabel": x, "ylabel": y,
         "width_mm": width_mm,
         "height_mm": 62.0 if width_mm >= COL_WIDTH_MM else 58.0,
@@ -1786,7 +1881,7 @@ def plan_from_shape(table: str, meta: dict, cols: list[Column], *,
         "formats": ["pdf", "svg", "png", "tiff"],
         "columns": [c.to_dict() for c in cols],
         "n_rows": meta.get("n_rows", 0),
-        "why": pick.why if pick else "",
+        "why": why,
     }
 
 

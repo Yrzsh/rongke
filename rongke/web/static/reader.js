@@ -478,16 +478,16 @@ function deskTitleOf(text, r) {
    先把面板打开再说"读取中…"：点了没反应最容易被当成坏了，
    而这里读的可能是几十万字符的文件。 */
 async function deskReadFile(runId, f) {
-  const base = { title: f.path, meta: fmtSize(f.size) + " · 读取中…" };
-  openDesk({ text: "", title: base.title, meta: base.meta });
+  const base = { title: f.path, meta: fmtSize(f.size) + " · 读取中…", runId: runId, filePath: f.path };
+  openDesk({ text: "", title: base.title, meta: base.meta, runId: runId, filePath: f.path });
   try {
     const r = await fetch("/api/artifact?id=" + encodeURIComponent(runId) +
                           "&path=" + encodeURIComponent(f.path));
     if (!r.ok) throw new Error("HTTP " + r.status);
     const t = await r.text();
-    openDesk({ text: t, title: f.path, meta: fmtSize(f.size) + " · " + t.length + " 字符 · " + (f.ext || "") });
+    openDesk({ text: t, title: f.path, runId: runId, filePath: f.path, meta: fmtSize(f.size) + " · " + t.length + " 字符 · " + (f.ext || "") });
   } catch (e) {
-    openDesk({ text: "", title: f.path, meta: "读取失败：" + (e && e.message ? e.message : e) });
+    openDesk({ text: "", title: f.path, runId: runId, filePath: f.path, meta: "读取失败：" + (e && e.message ? e.message : e) });
   }
 }
 /* ═══ 「打开本地论文」═══
@@ -717,10 +717,12 @@ function openDesk(o) {
   // 中间保底 400：连右栏最小 300 都塞不下 -> 不开，让位给主区（DSH：报"空间不够"让它自己关）
   if (window.innerWidth > 880 && !deskRoomOk()) return false;
   deskExitOrig();                    // 从原页模式切回正文：清掉原页的滚动/缩放残留
+  deskSetEditMode(false);
   DESK.text = String(o.text || "");
   DESK.title = o.title || "交付正文";
   DESK.meta = o.meta || "";
   DESK.runId = o.runId || "";
+  DESK.filePath = o.filePath || "";
   /* 图表内嵌的映射必须**每稿现拉** —— 上一稿的 figs 留着，就会把别人的图嵌进这一稿。
      同一句话对 docAbs 也成立：上一稿的 PDF 留着，这一稿的「原页」会打开**别人的原件**，
      而且界面上完全看不出来（开关亮着、点开是另一篇）—— 那是最坏的一类错。 */
@@ -1252,6 +1254,113 @@ function deskInit() {
   // DSH「布局刷新即重置」：不再按 localStorage 自动展开；首屏右栏收起，
   // 用户点「读全稿 / 稿件台」或某次跑完时按需打开 —— 打开时算 45% 首开宽。
   origWire();
+  deskWireEdit();
+}
+
+function deskEditMsg(text, tone) {
+  const m = $("#deskEditMsg");
+  if (!m) return;
+  if (!text) { m.hidden = true; m.textContent = ""; m.dataset.tone = ""; return; }
+  m.hidden = false;
+  m.dataset.tone = tone || "info";
+  m.textContent = text;
+}
+
+function deskSetEditMode(on) {
+  const box = $("#deskEditBox"), txt = $("#deskText"), ed = $("#deskEditor"),
+        btn = $("#deskEditBtn"), stat = $("#deskEditStat");
+  if (!box || !txt || !ed) return;
+  on = !!on;
+  if (on && !DESK.text) return;
+  box.hidden = !on;
+  txt.hidden = on;
+  if (btn) btn.classList.toggle("on", on);
+  deskEditMsg("");
+  if (on) {
+    ed.value = DESK.text || "";
+    if (stat) stat.textContent = ed.value.length + " 字符";
+    ed.focus();
+  }
+}
+
+function deskApplySavedDraft(res) {
+  if (!res || !res.draft) return;
+  DESK.text = res.draft;
+  DESK.meta = (res.chars || res.draft.length) + " 字 · 已微调";
+  DESK.blocks = deskBlocks(DESK.text);
+  DESK.hasH = DESK.blocks.some(b => b.k === "h");
+  const dm = $("#deskMeta");
+  if (dm) dm.textContent = DESK.meta;
+  if (typeof LAST_RESULT !== "undefined" && LAST_RESULT && (!DESK.runId || LAST_RESULT.run_id === DESK.runId)) {
+    LAST_RESULT.draft = res.draft;
+    if (res.lint) LAST_RESULT.lint = res.lint;
+  }
+  deskPaint();
+}
+
+async function deskSaveMinorEdit(normalize) {
+  const rid = DESK.runId || (typeof CUR !== "undefined" && CUR && CUR.id) || "";
+  if (!rid) { deskEditMsg("只有已归档或当前会话的稿件才能写回工作区（本地打开的文件不修改原件）。", "warn"); return; }
+  const ed = $("#deskEditor"), box = $("#deskEditBox");
+  const editing = box && !box.hidden && ed;
+  const payload = { id: rid, normalize: !!normalize };
+  if (editing) payload.text = ed.value;
+  if (DESK.filePath) payload.path = DESK.filePath;
+  const endpoint = (!editing && normalize) ? "/api/draft/normalize" : "/api/draft/save";
+  deskEditMsg("正在保存并重算写作体检…", "info");
+  try {
+    const res = await api(endpoint, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.draft != null) {
+      deskApplySavedDraft(res);
+      if (ed && editing) ed.value = res.draft;
+      if ($("#deskEditStat")) $("#deskEditStat").textContent = (res.draft || "").length + " 字符";
+    }
+    const ch = (res.changes && res.changes.length) ? "（" + res.changes.join("、") + "）" : "";
+    const sc = res.lint && res.lint.score != null ? " · 体检 " + res.lint.score + "/100" : "";
+    deskEditMsg("已保存到 " + (res.path || "工作区") + ch + sc, "ok");
+    if (!editing && typeof $("#hint") !== "undefined" && $("#hint")) {
+      $("#hint").innerHTML = '<span style="color:var(--ok-fg)">已规范体例' + esc(ch) + esc(sc) + "</span>";
+    }
+  } catch (e) {
+    deskEditMsg("保存失败：" + (e && e.message ? e.message : e), "err");
+  }
+}
+
+function deskWireEdit() {
+  const btn = $("#deskEditBtn"), cancel = $("#deskEditCancel"),
+        save = $("#deskEditSave"), norm = $("#deskEditNorm"),
+        normMenu = $("#deskNormBtn"), ai = $("#deskEditAi"),
+        ed = $("#deskEditor"), stat = $("#deskEditStat");
+  if (btn) btn.onclick = () => {
+    const box = $("#deskEditBox");
+    deskSetEditMode(box ? box.hidden : true);
+  };
+  if (cancel) cancel.onclick = () => deskSetEditMode(false);
+  if (ed && stat) ed.oninput = () => { stat.textContent = ed.value.length + " 字符"; };
+  if (save) save.onclick = () => deskSaveMinorEdit(false);
+  if (norm) norm.onclick = () => deskSaveMinorEdit(true);
+  if (normMenu) normMenu.onclick = () => {
+    const p = $("#deskMorePanel"); if (p) p.hidden = true;
+    deskSaveMinorEdit(true);
+  };
+  if (ai) ai.onclick = () => {
+    const val = (ed && !$("#deskEditBox").hidden) ? ed.value : (DESK.text || "");
+    let snippet = "";
+    if (ed && !$("#deskEditBox").hidden && ed.selectionEnd > ed.selectionStart) {
+      snippet = ed.value.slice(ed.selectionStart, ed.selectionEnd).trim();
+    }
+    const goal = $("#goal");
+    if (!goal) return;
+    goal.value = snippet
+      ? "仅微调下面这一段，保持全文其余章节、引注编号和整体风格不变：\n" + snippet
+      : "请对当前初稿做局部微调（指出需要改的细节并就地更新正文，保持已有引注与主结构不变）：\n（写下你的微调要求）";
+    if (typeof goView === "function") goView("chat");
+    if (typeof autoGrow === "function") autoGrow();
+    goal.focus();
+  };
 }
 /* ── 原页阅读的控件接线（与正文那套并存，只在原页模式下生效） ── */
 function origWire() {

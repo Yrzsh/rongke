@@ -492,6 +492,7 @@ const VIEWS = { chat:["新任务",""],
                 tools:["科研工具","查文献 / 核 DOI / 画图 / 排 PPT"],
                 kb:["文献库","你手上的 PDF，能查到原页段落"],
                 mentor:["导师与课题","管理研究问题、课题台账和本课题文献"],
+                lab:["实验台","规划实验、记录成果、整体分析"],
                 deliv:["成果文件","做出来的东西都在这，点开看全稿"],
                 fig:["图片与图表","配过的图和它们的体检报告"],
                 setup:["环境检查","画图和做 PPT 要用的工具配好了没有"],
@@ -526,6 +527,7 @@ document.querySelectorAll(".navbtn[data-v]").forEach(b => {
       else loadKb();
     }
     if (v === "mentor" && window.RongkeMentor) RongkeMentor.openManager();
+    if (v === "lab" && window.RongkeLab) RongkeLab.open();
     if (v === "cap") loadCap();
     if (v === "gate") loadGate();
     if (v === "deliv") loadDeliv();
@@ -756,8 +758,12 @@ function paintSessions() {
          但行的主身份仍是"一次对话"，不是"一个文件"。 */
       (art ? '<span class="sess-art" title="这次有交付">' + ART_GLYPH + "</span>" : "") +
       (r.live ? "" : '<span class="sess-time">' + esc(relTime(r.ts_iso)) + "</span>") +
+      (r.live ? "" : '<button type="button" class="sess-del" data-del-i="' + i + '" title="移出历史列表" aria-label="移出历史列表">×</button>') +
       "</div></div></div>";
   }).join("");
+  host.querySelectorAll(".sess-del").forEach(b => {
+    b.onclick = e => { e.stopPropagation(); e.preventDefault(); dropSession(SESS[+b.dataset.delI]); };
+  });
   host.querySelectorAll(".sess").forEach(el => {
     const open = () => openSession(SESS[+el.dataset.i]);
     el.onclick = open;
@@ -1009,8 +1015,43 @@ ctxBind($("#sessList"), i => {
   const art = ART_IDX.get(r.id);
   if (art && art.draft) items.push({ name: "在稿件台读这次的正稿", run: () => deskLoadRun(r.id) });
   items.push({ name: "复制目标全文", run: () => ctxCopy(r.goal || "") });
+  if (!r.live) items.push({ name: "移出历史列表", run: () => dropSession(r) });
   return items;
 });
+
+async function dropSession(r) {
+  if (!r || !r.id || r.live) return;
+  const label = goalHead(r.goal) || r.id;
+  if (!confirm("把「" + label + "」移出历史列表？\n\n对应工作区目录会移入 runs/_trash 回收区，不会销毁磁盘原文件。")) return;
+  let res, data;
+  try {
+    res = await fetch("/api/run/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: r.id }),
+    });
+    data = await res.json().catch(() => ({ error: "响应不是 JSON" }));
+  } catch (e) {
+    note("移出失败：" + errMsg(e));
+    return;
+  }
+  if (!res.ok || !data || !data.ok) {
+    note("移出失败：" + String((data && data.error) || ("HTTP " + res.status)));
+    return;
+  }
+  if (CUR && CUR.id === r.id) {
+    if (ES) { ES.close(); ES = null; }
+    CUR = null; TRAJ = { contract: null, result: null }; DRAFT = null;
+    $("#thread").hidden = true; $("#empty").hidden = false; $("#wbOverview").hidden = false;
+    $("#thread").innerHTML = ""; $("#cPreview").innerHTML = "";
+    delete $("#title").dataset.quiet;
+    $("#title").textContent = "新任务";
+    paintTraj();
+  }
+  note(data.note || ("已把「" + label + "」移出历史列表。"));
+  loadSessions();
+  loadArts();
+}
 
 /* ═════════════ 侧栏收起 / 展开（照 DSH：刷新即重置）═════════════
    DSH 的布局状态**不持久化**（ui-layout/README：panel geometry is transient，
@@ -1898,6 +1939,7 @@ async function loadStatus() {
   loadSessions();
   loadArts();
   wbOverview();
+  refreshRkHub();
   if (STATUS.active && !CUR) attach(STATUS.active, "（重连正在跑的任务）");
 }
 
@@ -2068,19 +2110,23 @@ function renderContractPreview() {
       '</details>' +
     "</div>" +
     '<div class="cf"><button class="mini pri" id="cGo">确认，开始执行</button>' +
+      '<button class="mini" id="cGoDirect" title="开启无人值守：长任务不弹窗中断，一轮直出初稿">一轮直出（无人值守）</button>' +
       '<button class="mini" id="cCancel">返回修改</button>' +
       '<button class="mini" id="cAgain">重新整理</button></div>' +
   "</div>";
-  $("#cGo").onclick = () => {
+  const _launchPreview = (forceUnattended) => {
     DRAFT.acceptance = $("#cAcc").value.split("\n").map(s => s.trim()).filter(Boolean);
     const t = $("#cTgt").value.trim();
     DRAFT.target_chars = t ? parseInt(t, 10) : null;
     const mx = $("#cMax").value.trim();
     MAXSTEPS = mx ? parseInt(mx, 10) : null;
+    if (forceUnattended && typeof setUnattended === "function") setUnattended(true);
     $("#cPreview").innerHTML = "";
     const confirmed = DRAFT; DRAFT = null;
     send(confirmed);
   };
+  $("#cGo").onclick = () => _launchPreview(false);
+  if ($("#cGoDirect")) $("#cGoDirect").onclick = () => _launchPreview(true);
   $("#cAgain").onclick = () => { $("#cPreview").innerHTML = ""; DRAFT = null; previewContract(); };
   $("#cCancel").onclick = () => {
     $("#cPreview").innerHTML = ""; DRAFT = null; $("#hint").textContent = "";
@@ -2104,6 +2150,15 @@ function renderContractPreview() {
      回放旧会话时由那条事件把开关摆回它当时的位置 —— 不是前端记的一个数。 */
 let MENTOR = false;
 let TOPIC = null;          // 最近一次从 /api/topic 读回来的课题台账（null = 还没读到）
+/* ★ 导师模型（advisor profile，2026-11-14 续）：**这一场按谁的判断方式**。
+   空串 = 只用通用导师视角。与 MENTOR 的关系是「开关」与「判准」：
+   MENTOR 决定进不进导师立场，它决定进去之后按哪个人的标准判断。
+   ★这个值**必须真的进内核**（POST /api/run 的 advisor 字段 ⇒
+     `initial_messages(advisor_slug=...)`）。只改界面标签、不进内核，
+     就是本仓反复吃过的「假开关」。 */
+let ADVISOR = "";
+let ADVISORS = [];         // /api/advisor 读回来的清单（空数组 ≠ 读失败，两件事分开）
+let ADVISOR_ERR = "";
 
 function setMentor(on, why) {
   on = !!on;
@@ -2118,6 +2173,11 @@ function setMentor(on, why) {
     tag.dataset.tone = on ? "info" : "neutral";
   }
   paintMentorBar();
+  const hbBtn = document.querySelector('#empty [data-rk-cmd="toggle-mentor"]');
+  if (hbBtn) {
+    hbBtn.textContent = on ? "导师模式：已开" : "导师模式";
+    hbBtn.classList.toggle("on", on);
+  }
   if (window.RongkeMentor) RongkeMentor.paint();
   if (why) note(why, "prog");
 }
@@ -2127,7 +2187,7 @@ function toggleMentor() {
     return;
   }
   setMentor(!MENTOR);
-  if (MENTOR) loadTopic();
+  if (MENTOR) { loadTopic(); loadAdvisors(); }
 }
 
 /* ═════════════ 任务模式 / 仅问答（W36）═════════════
@@ -2211,6 +2271,8 @@ function paintMentorBar() {
          known.map(s => '<option value="' + esc(s) + '">').join("") + "</datalist>" : "") +
        '<button class="btn outline sm" id="btnTopicUse">切过去 / 新建</button>' +
        '<span class="mnote" id="topicMsg"></span></div>';
+  /* 导师模型：开着导师模式才有意义（关了不渲染，不占位）。 */
+  h += advisorRowHtml();
   /* 未闭环卡点：内核纪律①「未闭环必须浮现」—— 这里照它的口径列，超了如实报数。 */
   if (t && t.current && Array.isArray(t.blockers)) {
     const ops = t.blockers.filter(b => b.status === "open").slice(0, 3);
@@ -2228,6 +2290,10 @@ function paintMentorBar() {
   if (btn) btn.onclick = useTopic;
   const inp = $("#topicSlug");
   if (inp) inp.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); useTopic(); } };
+  const sel = $("#advisorSel");
+  if (sel) sel.onchange = () => setAdvisor(sel.value,
+    sel.value ? "这一场按所选导师的判准评（下一条消息开始生效）"
+              : "已退回通用导师视角");
 }
 async function useTopic() {
   const el = $("#topicSlug");
@@ -2248,6 +2314,66 @@ async function useTopic() {
     ? (d.created ? "已立新课题" : "已切到该课题")
     : "没切成：" + ((d && (d.error || d.message)) || "内核没回");
   await loadTopic();
+}
+/* ═══ 导师模型选择器（2026-11-14 续）═══════
+   为什么要它：「导师模式」原来只能给一个**通用**的导师视角；
+   而组会前真正扎人的从来不是泛泛的错 —— 是**他自己导师特有的那几问**。
+   选了一位，首条消息里就多一段他的判准。
+
+   三条纪律（与课题面板同源）：
+     ① 清单是内核读回来的（`GET /api/advisor`），前端不猜、不缓存。
+     ② 「没选」与「读不到」是**两件事**：后者要如实报错，
+        不许渲染成「你还没建过导师模型」。
+     ③ 选了却没注入（那一层是空的、或文件不在）时，界面必须能说出来 ——
+        否则那个选择器就是个装饰。 */
+async function loadAdvisors() {
+  try {
+    const d = await api("/api/advisor");
+    ADVISORS = Array.isArray(d && d.advisors) ? d.advisors : [];
+    ADVISOR_ERR = "";
+    /* 选中的那位被删了 / 改名了 ⇒ 退回通用视角并说出来，
+       不许默默用通用视角而界面仍显示「已选：某某」。 */
+    if (ADVISOR && !ADVISORS.some(a => a.slug === ADVISOR)) {
+      const gone = ADVISOR;
+      ADVISOR = "";
+      note("刚才选的导师模型已不存在（" + gone + "），已退回通用导师视角。", "warn");
+    }
+  } catch (e) {
+    ADVISOR_ERR = e.message || String(e);
+  }
+  if (window.RongkeMentor) RongkeMentor.refresh(); else paintMentorBar();
+}
+function setAdvisor(slug, why) {
+  ADVISOR = String(slug || "");
+  paintMentorBar();
+  if (why) note(why, "prog");
+}
+/* 一段 HTML，插在导师条里。没开导师模式就不出现 —— 导师模型只在导师模式里有意义。 */
+function advisorRowHtml() {
+  let h = '<div class="mrow"><span class="mk">按谁的判准</span>';
+  if (ADVISOR_ERR) {
+    return h + '<span class="tag" data-tone="warning">导师模型清单读不到</span>' +
+           '<span class="mnote">' + esc(ADVISOR_ERR) + '。这是读数取不到，不代表你没建过。</span></div>';
+  }
+  const cur = ADVISORS.find(a => a.slug === ADVISOR);
+  h += '<select id="advisorSel" class="ipt">' +
+       '<option value=""' + (ADVISOR ? "" : " selected") + '>通用导师视角（不指定人）</option>' +
+       ADVISORS.map(a => '<option value="' + esc(a.slug) + '"' +
+         (a.slug === ADVISOR ? " selected" : "") + '>' +
+         esc(a.name || a.slug) + '（' + esc(a.version || "v1") + '，' +
+         (a.layers || []).length + '/4 层）</option>').join("") +
+       "</select>";
+  if (!ADVISORS.length) {
+    h += '<span class="mnote">还没建过导师模型。直接对它说「把我导师的判断方式存下来」，' +
+         '把批注/组会记录给它，它会蒸馏成四层档案。</span>';
+  } else if (cur) {
+    const low = Number(cur.sufficiency || 0) < 40;
+    h += '<span class="tag" data-tone="' + (low ? "warning" : "info") + '">' +
+         '素材充分度 ' + Number(cur.sufficiency || 0) + '</span>' +
+         (low ? '<span class="mnote">素材偏少 —— 模板补的那几条不是他真说过的话。</span>' : "");
+  }
+  h += "</div>";
+  return h;
 }
 /* ★ 读回来的**不是**界面自己的猜测：课题住在内核的 topics/ 台账里。
    读不到就如实留着错误，不把失败渲染成"没有课题"（本仓定律：两件事）。 */
@@ -2335,6 +2461,140 @@ $("#mentorWrap").onclick = toggleMentor;
 $("#mentorSwitch").onkeydown = e => {
   if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleMentor(); }
 };
+/* ★ 导师回包读回（2026-11-14 补接线）。内核从 11-14 起就 `tee("mentor_review", …)`
+   推这条事件，而 `case "mentor_review"` **全仓没有** —— 一份 0 条问题、
+   没挂位置、自称「多位评审一致认为」的预演，用户屏幕上什么都看不到。
+   同一类失效在本仓已经发生过三次（`mentor_audit` 造了没 emit、
+   `force_brief` 判据写了没人调）；这次是**事件推了没人收**。
+
+   只读内核给的三态（`ok` / `verdict` / `gaps`），前端不另算一遍："通过 / 不合格"。
+   `advisory`：这是提示，不是交付门 —— 不影响本次任务的成功与否。 */
+function renderMentorReview(d) {
+  if (!d) return;
+  if (d.error) {
+    note("导师回包复核没跑成（**未测**，不是合格）：" + d.error, "warn",
+         "复核异常 ⇒ 这一层没测。「没测」不等于「评语合格」。");
+    return;
+  }
+  const gaps = d.gaps || [];
+  const n = Number(d.n_findings) || 0;
+  const nq = Number(d.n_questions) || 0;
+  const reh = !!d.rehearsal;
+  const head = reh ? "这次是**预演**（会前 / 开题）：" : "";
+  const what = head + "读出 " + n + " 条带位置的问题"
+             + (reh && nq ? "（其中 " + nq + " 条是「会被问到」的问答形态）" : "") + "。";
+  const lead = gaps.length ? ("这一份现在还交不出去，缺的是：" + gaps.join("；"))
+                           : "回包里每一条都挂了位置与证据，可以逐条复核。";
+  note((d.ok ? "导师回包读回：可复核" : "导师回包读回：有缺口")
+       + "　" + what + "\n" + lead,
+       d.ok ? "prog" : "warn",
+       [ "判据全部由内核按规则算，不采信模型自述（" + (d.mode || "") + "）",
+         "判定：" + (d.verdict || "（未写）"),
+         "覆盖镜头 " + (d.n_lenses || 0) + " 个"
+           + (reh ? "（含预演镜头）" : ""),
+         d.appended_to_final
+           ? "内核已把补齐清单追加到本次答复末尾 —— 不追加的话只有界面看得见，"
+             + "而你明天就要上台"
+           : "",
+         gaps.length ? "逐条缺口：" + gaps.join("；") : "",
+         d.advisory ? "这是提示，不是交付门：不影响本次任务成功与否。" : "",
+       ].filter(Boolean).join("\n"));
+  renderMentorFindingsCard(d);
+}
+
+function renderMentorFindingsCard(d) {
+  const findings = (d && Array.isArray(d.findings)) ? d.findings : [];
+  if (!findings.length || !TURN || !TURN.round) return;
+  const host = TURN.round;
+  const LENS_CN = {
+    claim_evidence: "论断-证据", methodology: "方法学自洽",
+    numbers: "数字复算", counterexample: "反例与边界",
+    group_meeting: "组会预演", defence: "开题/答辩预演",
+  };
+  const card = document.createElement("div");
+  card.className = "mr-card";
+  card.innerHTML =
+    '<div class="mr-head"><b>导师诊断清单（' + findings.length + ' 条）</b>' +
+    '<span class="tag" data-tone="' + (d.verdict === "PASS" ? "ok" : "warning") + '">' +
+    esc(d.verdict || "NOT_READY") + "</span></div>" +
+    findings.map((f, idx) => {
+      const badge = f.question ? f.question : (f.severity || "P2");
+      const tone = f.question ? "info" : (f.severity === "P0" ? "err" : f.severity === "P1" ? "warning" : "neutral");
+      return '<div class="mr-item" data-idx="' + idx + '">' +
+        '<div class="mr-item-top"><span class="tag" data-tone="' + tone + '">' + esc(badge) + '</span>' +
+        (f.lens ? '<span class="tag" data-tone="neutral">' + esc(LENS_CN[f.lens] || f.lens) + '</span>' : '') +
+        '<b>' + esc(f.issue || "") + '</b></div>' +
+        '<div class="mr-meta">' +
+          (f.location ? '<div><span>位置：</span>' + esc(f.location) + '</div>' : '') +
+          (f.evidence ? '<div><span>证据：</span>' + esc(f.evidence) + '</div>' : '') +
+          (f.why_it_matters ? '<div><span>影响：</span>' + esc(f.why_it_matters) + '</div>' : '') +
+          (f.recommended_fix ? '<div><span>' + (f.question ? "怎么答：" : "怎么改：") + '</span>' + esc(f.recommended_fix) + '</div>' : '') +
+          (f.acceptance_test ? '<div><span>复核：</span>' + esc(f.acceptance_test) + '</div>' : '') +
+        '</div>' +
+        '<div class="mr-acts">' +
+          '<button type="button" class="mini" data-mr-fix="' + idx + '">按此微调</button>' +
+          '<button type="button" class="mini" data-mr-deep="' + idx + '">追问搞懂</button>' +
+          '<button type="button" class="mini" data-mr-blk="' + idx + '">记入卡点</button>' +
+        '</div></div>';
+    }).join("");
+  card.querySelectorAll("[data-mr-fix]").forEach(b => b.onclick = () => {
+    const f = findings[+b.dataset.mrFix]; if (!f) return;
+    const g = $("#goal"); if (!g) return;
+    g.value = "请仅针对以下导师指出的问题微调正文/报告（保持其余内容不变）：\n问题：" +
+      (f.issue || "") + "\n位置：" + (f.location || "") + "\n改法：" + (f.recommended_fix || "");
+    autoGrow(); g.focus();
+  });
+  card.querySelectorAll("[data-mr-deep]").forEach(b => b.onclick = () => {
+    const f = findings[+b.dataset.mrDeep]; if (!f) return;
+    const g = $("#goal"); if (!g) return;
+    setMentor(true);
+    g.value = "针对这一条继续深入追问我，帮我彻底吃透底层原理和边界条件，不要直接替我圆场：\n" +
+      (f.issue || "") + (f.why_it_matters ? "（" + f.why_it_matters + "）" : "");
+    autoGrow(); g.focus();
+  });
+  card.querySelectorAll("[data-mr-blk]").forEach(b => b.onclick = async () => {
+    const f = findings[+b.dataset.mrBlk]; if (!f) return;
+    const slug = (TOPIC && TOPIC.slug) || "";
+    if (!slug) {
+      $("#hint").innerHTML = '<span style="color:var(--warn)">请先在「导师与课题」里选定一个课题，再记入卡点。</span>';
+      return;
+    }
+    try {
+      await api("/api/topic", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "raise_blocker", slug,
+          what: (f.issue || "").slice(0, 200),
+          where: (f.location || "").slice(0, 120),
+          tried: f.evidence ? [("导师诊断：" + f.evidence).slice(0, 200)] : [],
+        }),
+      });
+      b.textContent = "已记入卡点 ✓"; b.disabled = true;
+    } catch (e) {
+      $("#hint").innerHTML = '<span style="color:var(--err)">记入卡点失败：' + esc(e.message) + "</span>";
+    }
+  });
+  host.appendChild(card);
+}
+
+let UNATTENDED = false;
+function setUnattended(on) {
+  UNATTENDED = !!on;
+  const b = $("#btnUnattended");
+  if (b) {
+    b.setAttribute("aria-pressed", UNATTENDED ? "true" : "false");
+    b.classList.toggle("on", UNATTENDED);
+  }
+}
+if ($("#btnUnattended")) {
+  $("#btnUnattended").onclick = () => {
+    setUnattended(!UNATTENDED);
+    $("#hint").textContent = UNATTENDED
+      ? "已开启「直出初稿」：长任务/成稿过程中不弹窗等待，自动推进交付。"
+      : "已关闭「直出初稿」。";
+  };
+}
+
 
 /* 模式开关的接线（W36）。放在这里与导师开关同一处初始化 ——
    两个开关都住在 `.ctool` 那一行，各接各的，但都在这一个 IIFE 里注册一次。 */
@@ -2374,10 +2634,14 @@ async function send(frozen, steps) {
     // ★ 开关**每次显式带上**（开着 true、关着 false）：字段缺席在后端读成"关"，
     //   但让界面替内核猜一个默认值就是假功能的第一步 —— 要说就说死。
     body.kb_only = !!MENTOR;
+    /* ★ 导师模型：**同样每次显式带上**（空串 = 通用视角）。
+       这个字段不进内核，界面上那个下拉框就只是个装饰。 */
+    body.advisor = ADVISOR || "";
     // ★ W36 模式开关：同理，**每次显式带上**。默认 "task"（= 今天的行为），
     //   只有用户亲手按了"仅问答"才变 "answer"。后端认不出的值一律回落到自动，
     //   所以拼错也不会静默变成一个假模式。
     body.mode = MODE;
+    body.unattended = !!UNATTENDED;
     // ★ 每次显式带上 preset（空串 = baseline）。前端说了不算 —— 后端必须
     //   真的读、Run 必须真的存、_exec 必须真的传进 kernel.run（见 presets_live_test）。
     body.preset = PRESET;
@@ -2425,7 +2689,10 @@ async function followUp(text) {
   let d;
   try {
     d = await api("/api/follow", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ id: CUR.id, text, kb_only: !!MENTOR, mode: MODE, preset: PRESET }) });
+      // ★ 字段名都在一行里（`preset` / `advisor` 都不神隐）—— 截断成两行时，
+      //   那些「请求体里带了 X」的判据会看不见它，而产品行为本来是对的
+      //   —— 变成「测的是排版」。排版不是判据的事。
+      body: JSON.stringify({ id: CUR.id, text, kb_only: !!MENTOR, mode: MODE, preset: PRESET, advisor: ADVISOR || "" }) });
   } catch (e) {
     LIVE = false; stopTimer();
     setBusy(false);
@@ -3188,6 +3455,21 @@ const TOOLHUMAN = {
      lab_record / lab_report 补的是「老师说我没数据」——
      把定性观察与定量测量分成两件事，缺口才算得出来。 */
   topic_link: "关联文献到课题", topic_update: "改课题信息",
+  /* ★ 2026-11-14 补：导师模型三只手套。名字要说出**用户看得懂的那件事**，
+     不是把内核词译一遍「advisor_save ⇒ 保存导师」—— 那句话对用户没信息量。
+     看不懂「导师模型」的人，这里告诉他——它在做什么。 */
+  advisor_status: "看已建的导师模型", advisor_save: "把导师的判断方式存下来",
+  advisor_read: "读导师模型那几层",
+  /* ★ 2026-11-15 补：开题大纲三只。名字要说出用户想的那件事 ——
+     「敲定大纲」「看还差什么数据」「把缺的数据排成实验」。
+     不要写成「保存大纲」，那看不出它跟 PLAN.md 有什么区别。 */
+  outline_save: "敲定开题大纲", outline_status: "看还差什么数据",
+  outline_to_lab: "把缺的数据排成实验",
+  /* ★ 2026-11-15 补：方法台账 + 创新点。要说出「这件事对他有什么用」——
+     method_record 不是「保存方法」，是「把我这一版怎么做的记下来」；
+     patent_leads 不是「专利分析」，是「看这里有没有我自己的东西」。 */
+  method_record: "记这个方法怎么做的", method_status: "看方法各版本",
+  patent_leads: "看有没有能报专利的点",
   lab_record: "记实验台账", lab_report: "出汇报页", lab_method: "出方法卡",
   /* ★ 2026-10-22 补：这 16 个工具**真实调用过却没有中文名**（机械核对过
      runs 目录下所有 trace.jsonl，见 _x_miss.py）。最严重的两个：
@@ -3205,7 +3487,7 @@ const TOOLHUMAN = {
 /* 预设能力注册的工具**只在本次 run 存在**，不进 TOOLHUMAN：ui_check W18 的
    分母是开机常驻注册表 /api/tools，写进主表会被判成「内核没注册的旧名」。
    分开放，既不骗判据，也不让主视图显示裸英文标识符。 */
-const PRESET_TOOLHUMAN = { writing_metrics: "量稿件字数与引注" };
+const PRESET_TOOLHUMAN = { writing_metrics: "量稿件字数与引注", source_alignment: "核引文出处与原文支撑", journal_open: "开一页岸记", journal_note: "续写实验手记", journal_read: "读回某一渡", journal_done: "规划条目结案", journal_render: "重渲染日记本", manuscript_check: "查稿件体例", manuscript_fix: "规范稿件格式", manuscript_desk: "生成稿件台视图", visual_plan: "看逐章图表覆盖", visual_place: "把图表插进正文", deck_plan: "取幻灯片规格模板", deck_make: "按内容一次成稿", deck_slide: "改单页幻灯片", deck_desk: "生成幻灯片台视图", canvas_act: "操作AI画布图元", canvas_export: "导出AI画布成稿", diagram_svg: "画机制图", typeset: "排论文版式", typeset_export: "导出排版成品", paper_status: "看论文交付态", visual_renumber: "重编图表编号与引用" };
 function humanTool(name) { return TOOLHUMAN[name] || PRESET_TOOLHUMAN[name] || name; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3681,6 +3963,7 @@ async function onEvent(ev) {
        界面上一片安静，等于「做了但没人知道它做过」。内核这四条新事件
        必须在这儿露面，用户才知道这一轮用的是哪把尺子。 */
     case "preset_mounted": {
+      if (d.preset) PRESET = d.preset;
       const nm = PRESET_LABELS[d.preset] || d.preset || "这套要求";
       note("这一轮按「" + nm + "」的要求出稿", "prog",
            "预设 id=" + (d.preset || "") + " · healthy=" + d.healthy +
@@ -3746,6 +4029,28 @@ async function onEvent(ev) {
       note("这套要求没挂上，已按默认要求继续跑，不影响出稿", "warn",
            "预设 " + (d.preset || "") + " 装载失败：" + (d.error || "") +
            " → 回退 " + (d.fallback || "baseline"));
+      break;
+    case "preset_cleanup_error":
+      note("上一轮临时工具没能撤干净（" + (d.tool || "") + "）", "warn",
+           "预设 " + (d.preset || "") + " 清理异常：工具 " + (d.tool || ""));
+      break;
+    case "shape_route_error":
+      note("自动挂载写作要求没成功，已按默认要求继续跑", "warn",
+           "形状自动路由 " + (d.preset || "") + " 失败：" + (d.error || ""));
+      break;
+    case "run_shape":
+    case "run_plan": {
+      if (d.preset) PRESET = d.preset;
+      const nm = d.preset ? (PRESET_LABELS[d.preset] || d.preset) : "默认要求";
+      note("已按任务结构排好本场预算（" + (d.max_steps || 40) + " 步 · " + nm + "）", "prog",
+           "形状=" + (d.kind || "other") + " · 步数=" + (d.max_steps || 40) +
+           " · 预设=" + (d.preset || "baseline") +
+           " · 依据=" + JSON.stringify(d.reasons || []));
+      break;
+    }
+    case "schema_refresh":
+      note("工具可见面按阶段刷新（" + (d.refresh || "once") + "）", "prog",
+           "刷新策略=" + (d.refresh || "once") + " · schema=" + (d.schema_chars || 0) + " 字符");
       break;
     case "followup_constraints":
       if (d.error) {
@@ -3871,10 +4176,15 @@ async function onEvent(ev) {
          直播时收到一条、回放时从归档的 events 里重放同一条 —— 两处同一个来源。
          老归档里没有这条事件（那是 W22 之前跑的），前端保持默认"关"，不猜。 */
       setMentor(!!d.on);
+      /* ★ 导师模型也从**这条事件**恢复：历史回放时要能看出
+         「那一场是按谁的判准评的」。老归档里没这个字段（W22 之前）
+         ⇒ 保持空串，不猜。 */
       if (d.on) {
+        if ("advisor" in d) ADVISOR = String(d.advisor || "");
         if (d.topic) {
           try {
             TOPIC = await api("/api/topic?slug=" + encodeURIComponent(d.topic));
+            await loadAdvisors();
             if (window.RongkeMentor) RongkeMentor.refresh(); else paintMentorBar();
           } catch (e) { TOPIC = { error: e.message }; paintMentorBar(); }
         } else loadTopic();
@@ -3887,6 +4197,13 @@ async function onEvent(ev) {
       break;
     case "mentor_audit":
       renderMentorAudit(d);
+      break;
+    case "mentor_review":
+      renderMentorReview(d);
+      break;
+    case "manuscript_normalized":
+      note("已自动完成体例规范化（" + esc(d.file || "正文") + "：" +
+           esc((d.changes || []).join("、")) + "）", "prog");
       break;
     case "deliver_attempt":
       addGate(d);
@@ -4440,6 +4757,10 @@ function renderResult(res, host) {
     h += '<div class="sec">' +
       '<div class="manu" data-r="manu">' + md(manuText(res.draft, res.run_id)) + "</div>" +
       '<div class="da"><button class="mini" data-r="deskRead" title="把正文摊到右边整面墙上看：带目录、查找、字号">读全稿 ▤</button>' +
+        '<button class="mini" data-r="editDraft" title="打开稿件台并直接微调正文">微调正文</button>' +
+        '<button class="mini" data-r="normDraft" title="一键确定性修体例（引言去零号、文献表去内部标注等）">修体例</button>' +
+        '<button class="mini" data-r="aiPolish" title="仅微调部分内容，不动全文结构">AI 微调</button>' +
+        '<button class="mini" data-r="mentorCritique" title="请导师视角逐条检查这份报告/初稿">导师诊断</button>' +
         '<button class="mini" data-r="cpDraft">复制正文</button>' +
         '<button class="mini" data-act="dlmd">下载为 .md</button></div>' +
       lintCard(lint, false) + "</div>";
@@ -4489,6 +4810,44 @@ function renderResult(res, host) {
   if (cp) cp.onclick = () => copyText(res.draft || "");
   const rd = host.querySelector('[data-r="deskRead"]');
   if (rd) rd.onclick = () => openDesk(Object.assign(deskPayload(res), { restore: true }));
+  const edBtn = host.querySelector('[data-r="editDraft"]');
+  if (edBtn) edBtn.onclick = () => {
+    openDesk(Object.assign(deskPayload(res), { restore: true }));
+    if (typeof deskSetEditMode === "function") deskSetEditMode(true);
+  };
+  const normBtn = host.querySelector('[data-r="normDraft"]');
+  if (normBtn) normBtn.onclick = async () => {
+    if (!wsId) return;
+    normBtn.disabled = true;
+    try {
+      const r2 = await api("/api/draft/normalize", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: wsId }),
+      });
+      if (r2.draft != null) {
+        res.draft = r2.draft;
+        if (r2.lint) res.lint = r2.lint;
+        renderResult(res, host);
+      }
+      const ch = (r2.changes && r2.changes.length) ? "：" + r2.changes.join("、") : "（当前已符合规范）";
+      $("#hint").innerHTML = '<span style="color:var(--ok-fg)">体例规范化完成' + esc(ch) + "</span>";
+    } catch (e) {
+      $("#hint").innerHTML = '<span style="color:var(--err)">修体例失败：' + esc(e.message) + "</span>";
+    } finally { normBtn.disabled = false; }
+  };
+  const aiPol = host.querySelector('[data-r="aiPolish"]');
+  if (aiPol) aiPol.onclick = () => {
+    const g = $("#goal"); if (!g) return;
+    g.value = "请仅对上一轮初稿做如下局部微调（保持其余章节、引注编号和体例不变）：\n（写出要微调的地方）";
+    autoGrow(); g.focus();
+  };
+  const mCrit = host.querySelector('[data-r="mentorCritique"]');
+  if (mCrit) mCrit.onclick = () => {
+    setMentor(true);
+    const g = $("#goal"); if (!g) return;
+    g.value = "请以导师视角审查上面这份初稿/报告，按四个镜头逐条指出论断、方法、数据复算与反例边界上的潜在问题（给出位置、证据和改法）。";
+    autoGrow(); g.focus();
+  };
   const tb = host.querySelector('[data-r="techBtn"]');
   if (tb) tb.onclick = () => {
     const r = host.querySelector(".res");
@@ -5224,6 +5583,11 @@ async function loadDeliv() {
 
 /* ── 图表 ── */
 const FIG_RASTER = ["png", "jpg", "jpeg", "gif", "webp"];
+/* SVG 是矢量不是位图，但浏览器 <img> 能直接渲染它（服务端按 image/svg+xml 供，
+   见 server.py 的 /_analysis/ 分支）。缩略图资格 = 位图 + svg。早先只认
+   FIG_RASTER，原生 SVG 预览图 / 机制图在图表页被拒给缩略图，而产物列表那边
+   却把 svg 当图片 —— 两处口径不一致，这里统一到「能不能被 <img> 渲染」。 */
+const FIG_THUMB = FIG_RASTER.concat(["svg"]);
 /* ══════════ 分析成图 ══════════
    ★ 一条纪律：这一页**不自己判断图好不好**。图面体检的结论由服务端
      `figure.FigureAuditor` 给，界面只负责把它摆出来。重算一次就有两个真相。
@@ -5505,7 +5869,7 @@ async function loadFig() {
     if (figs.length) {
       h += '<div class="figgrid">' + figs.map((f, j) => {
         const ext = String(f.kind || (f.rel || "").split(".").pop() || "").toLowerCase();
-        const isImg = FIG_RASTER.indexOf(ext) >= 0;
+        const isImg = FIG_THUMB.indexOf(ext) >= 0;
         return '<div class="figthumb" data-fi="' + i + "-" + j + '">' +
           (isImg ? '<a href="' + esc(f.url || "") + '" target="_blank" rel="noopener">' +
             '<img src="' + esc(f.url || "") + '" alt=""></a>'
@@ -5735,22 +6099,26 @@ function renderSet(d) {
       row("setBaseUrl", "服务端点 base_url",
           '<input class="mono" id="setBaseUrl" type="text" value="' +
           esc(p.base_url == null ? "" : p.base_url) + '">',
-          "必须以 http:// 或 https:// 开头。", warn("provider.base_url")) +
+          "必须以 http:// 或 https:// 开头；填到 <code>/v1</code> 即可（误粘贴末尾的 <code>/chat/completions</code> 会自动去掉）。",
+          warn("provider.base_url")) +
       row("setEffort", "推理档位 reasoning_effort",
           segCtl((d.reasoning_choices || []).map(x => [x, x]),
                  p.reasoning_effort, 'id="setEffort"'),
-          "留空不保存。注意：内置默认写着" +
-          (p.send_reasoning_effort ? "<b>会</b>" : "<b>不会</b>") +
-          "把这个字段发给服务端（<code>send_reasoning_effort</code>，这一页不改它）。" +
-          "有的网关收不到它就安静地不思考 —— 那一档要改请手改 config.json。",
+          "配合下面「发送推理档位」开关使用：只有开关打开时才会把这里的档位发给服务端。",
           warn("provider.reasoning_effort")) +
+      row("setSendEffort", "发送推理档位",
+          swCtl([["0", "不发送"], ["1", "发送"]], p.send_reasoning_effort ? "1" : "0",
+                'id="setSendEffort"', "发送推理档位：{off}/{on}"),
+          "默认通道（commandcode）必须打开，否则会静默不思考；" +
+          "切到 OpenAI / DeepSeek / 通义 / Ollama / magpie 等标准接口时，" +
+          "若服务端报错不支持 <code>reasoning_effort</code>，请关掉它。",
+          warn("provider.send_reasoning_effort")) +
       row("setMax", "max_tokens", '<input class="short" id="setMax" type="number" min="1" step="1" value="' +
           esc(p.max_tokens) + '">', "正整数。", "") +
       row("setStream", "通道只支持流式",
           swCtl([["0", "自动"], ["1", "只走流式"]], p.stream_required ? "1" : "0",
                 'id="setStream"', "通道只支持流式：{off}/{on}"),
-          "有些通道（例如只接受流式请求的网关）必须打开它；打开后每次调用都带 stream=true。" +
-          "这与「推理档位是否发送」是两件事，后者仍在 config.json 的 send_reasoning_effort。",
+          "有些通道（例如只接受流式请求的网关）必须打开它；打开后每次调用都带 stream=true。",
           warn("provider.stream_required")) +
       row("setEnv", "密钥环境变量名",
           '<input class="mono" id="setEnv" type="text" value="' +
@@ -5784,7 +6152,27 @@ function renderSet(d) {
       '<div class="ctl" style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
       '<button class="mini pri" id="btnSetSave">保存并重建 agent</button>' +
       '<button class="mini" id="btnSetReload">放弃改动重新读</button>' +
+      (d.has_custom_provider ? '<button class="mini" id="btnSetReset">清除自定义配置（恢复默认）</button>' : "") +
       '<span class="note">只提交<b>真改动过</b>的字段；一个都没改就不发请求。</span></div>' +
+      '<div class="ctl" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2)">' +
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">' +
+          '<span style="font-size:12px;font-weight:600;color:var(--fg-2)">已保存的 API 方案</span>' +
+          '<input class="mono" id="setProfName" type="text" placeholder="方案名（如 DeepSeek / OpenAI）" style="max-width:220px">' +
+          '<button class="mini" id="btnProfSave">把当前填入存为方案</button>' +
+        '</div>' +
+        ((Array.isArray(d.profiles) && d.profiles.length)
+          ? '<div style="display:flex;flex-direction:column;gap:6px">' + d.profiles.map(pr =>
+              '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">' +
+                '<b>' + esc(pr.name || pr.id) + '</b>' +
+                '<code class="mono">' + esc(pr.model || "-") + '</code>' +
+                '<span class="note">' + esc(pr.base_url || "-") + '</span>' +
+                (pr.key_present ? setPill("ok", "密钥在") : setPill("warn", "待填密钥")) +
+                '<button type="button" class="mini" data-prof-apply="' + esc(pr.id) + '">切换使用</button>' +
+                '<button type="button" class="mini" data-prof-del="' + esc(pr.id) + '">删除</button>' +
+              '</div>'
+            ).join("") + '</div>'
+          : '<div class="note">还没有保存过常用 API 方案 —— 填好上面的模型与端点后点「存为方案」，方便随时切换或删除。</div>') +
+      '</div>' +
       "</div></div>" +
     /* ── 配置从哪一层来（第三节）：配置文件层级与环境变量覆盖 ── */
     '<div class="card"><h3>配置从哪一层来' +
@@ -5805,6 +6193,16 @@ function renderSet(d) {
       "</div></div>";
   $("#btnSetSave").onclick = saveSet;
   $("#btnSetReload").onclick = () => { SETRES = null; loadSet(); };
+  const btnReset = $("#btnSetReset");
+  if (btnReset) btnReset.onclick = resetSet;
+  const btnProfSave = $("#btnProfSave");
+  if (btnProfSave) btnProfSave.onclick = saveApiProfileUI;
+  $("#setBody").querySelectorAll("[data-prof-apply]").forEach(b => {
+    b.onclick = () => applyApiProfileUI(b.dataset.profApply);
+  });
+  $("#setBody").querySelectorAll("[data-prof-del]").forEach(b => {
+    b.onclick = () => deleteApiProfileUI(b.dataset.profDel);
+  });
   /* ── W19-A · 密钥：存到本机并当场验证 ──────────────────────
      两个方向都接：（存/清）。清空走的是同一个接口的 `value:""` 分支，
      服务端那边"空值 = 删掉这个键"，所以不存在"清一半"的状态。 */
@@ -6462,13 +6860,13 @@ async function loadSet() {
   SETD = d;
   renderSet(d);
 }
-async function saveSet() {
-  if (!SETD) { $("#setBody").innerHTML = kbFail("设置", {error: "还没读到配置", hint: "点「重新读」"}); return; }
-  const cur = SETD.provider || {};
+function collectProviderDiff() {
+  const cur = (SETD && SETD.provider) || {};
   const want = {
     "provider.model": $("#setModel").value.trim(),
     "provider.base_url": $("#setBaseUrl").value.trim(),
     "provider.reasoning_effort": $("#setEffort").value.trim(),
+    "provider.send_reasoning_effort": $("#setSendEffort").value,
     "provider.max_tokens": $("#setMax").value.trim(),
     "provider.api_key_env": $("#setEnv").value.trim(),
     "provider.stream_required": $("#setStream").value,
@@ -6483,34 +6881,14 @@ async function saveSet() {
       if (String(parseInt(now, 10) || 0) !== String(parseInt(was, 10) || 0)) {
         body[k] = now; touched.push(bare);
       }
-    } else if (k === "provider.stream_required") {
-      const nb = String(now) === "1", ob = !!cur.stream_required;
+    } else if (k === "provider.stream_required" || k === "provider.send_reasoning_effort") {
+      const nb = String(now) === "1", ob = !!cur[bare];
       if (nb !== ob) { body[k] = nb; touched.push(bare); }
     } else if (now !== was) { body[k] = now; touched.push(bare); }
   });
-  if (!touched.length) {
-    setRes("#setResBox", false, "没有任何字段被改动 —— 这次不发请求" +
-      "（否则会把没改的值也钉进 config.json，把内置默认悄悄变成硬配置）。");
-    return;
-  }
-  $("#btnSetSave").disabled = true;
-  setRes("#setResBox", false, "正在写入并重建 agent…（改了 " + touched.join("、") + "）");
-  let r, j;
-  try {
-    r = await fetch("/api/settings", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
-  } catch (e) {
-    j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
-  }
-  $("#btnSetSave").disabled = false;
-  if (!r || !r.ok || !j || !j.ok) {
-    // 服务端怎么说就怎么显示，一个字都不美化。
-    setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
-    // ★ 失败后**不重读**：重读会把输入框刷回服务端旧值，人刚打错的那一下就没了，
-    //   只能从头再敲一遍。留着他改的内容，改对再点保存。
-    return;
-  }
+  return { body, touched };
+}
+function formatSettingsReceipt(j) {
   const np = j.provider || {};
   const lines = [];
   lines.push("写入：" + Object.keys(j.written || {}).map(k => "provider." + k + " = " + j.written[k]).join("；"));
@@ -6524,8 +6902,190 @@ async function saveSet() {
   if (!j.key_present)
     lines.push("⚠ 环境变量 " + (np.api_key_env || "-") +
                " 现在没设 —— 换模型不会失败，但一发起调用就会被服务端拒。");
-  setRes("#setResBox", true, lines.join("\n"));
+  return lines;
+}
+async function saveSet() {
+  if (!SETD) { $("#setBody").innerHTML = kbFail("设置", {error: "还没读到配置", hint: "点「重新读」"}); return; }
+  const { body, touched } = collectProviderDiff();
+  const pendingKey = ($("#setKey") && $("#setKey").value.trim()) || "";
+  if (!touched.length && !pendingKey) {
+    setRes("#setResBox", false, "没有任何字段被改动 —— 这次不发请求" +
+      "（否则会把没改的值也钉进 config.json，把内置默认悄悄变成硬配置）。");
+    return;
+  }
+  $("#btnSetSave").disabled = true;
+  if ($("#btnKeySave")) $("#btnKeySave").disabled = true;
+  let j = null;
+  if (touched.length) {
+    setRes("#setResBox", false, "正在写入并重建 agent…（改了 " + touched.join("、") + "）");
+    let r;
+    try {
+      r = await fetch("/api/settings", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+    } catch (e) {
+      j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+    }
+    if (!r || !r.ok || !j || !j.ok) {
+      $("#btnSetSave").disabled = false;
+      if ($("#btnKeySave")) $("#btnKeySave").disabled = false;
+      // 服务端怎么说就怎么显示，一个字都不美化。
+      setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+      // ★ 失败后**不重读**：重读会把输入框刷回服务端旧值，人刚打错的那一下就没了，
+      //   只能从头再敲一遍。留着他改的内容，改对再点保存。
+      return;
+    }
+  }
+  if (pendingKey) {
+    const keyName = ($("#setEnv") && $("#setEnv").value.trim()) || "";
+    setRes("#setResBox", false, (touched.length ? "配置已写入，" : "") +
+      "正在把密钥存到本机并真发一次请求验证…（可能要十几秒）");
+    let kr, kj;
+    try {
+      kr = await fetch("/api/secret", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: keyName, value: pendingKey }) });
+      kj = await kr.json().catch(() => ({ error: "响应不是 JSON" }));
+    } catch (e) {
+      kj = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+    }
+    $("#btnSetSave").disabled = false;
+    if ($("#btnKeySave")) $("#btnKeySave").disabled = false;
+    if (!kr || !kr.ok || !kj || !kj.ok) {
+      const pre = j ? formatSettingsReceipt(j).concat("") : [];
+      setRes("#setResBox", false, pre.concat([
+        "✘ 密钥保存失败：" + String((kj && kj.error) || ("HTTP " + (kr ? kr.status : "?")))
+      ]).join("\n"));
+      if (j) {
+        SETD = null; await loadSet();
+        if ($("#setKey")) $("#setKey").value = pendingKey;
+        loadStatus();
+      }
+      return;
+    }
+    const lines = [];
+    if (j) {
+      lines.push("写入：" + Object.keys(j.written || {}).map(k => "provider." + k + " = " + j.written[k]).join("；"));
+      lines.push("落盘：" + (j.path || "-"));
+    }
+    lines.push("已存 " + (kj.chars || 0) + " 个字符到：" + (kj.path || "-") +
+               "（页面上不回显，这里也拿不到它的值）");
+    if (kj.verified) {
+      lines.push("✔ 已验证可用 —— 当场拿它发了一次请求，服务端回了：" +
+                 (kj.verify_sample ? "「" + kj.verify_sample + "」" : "正常响应"));
+      lines.push("现在就能开任务了，不用重启。");
+    } else {
+      lines.push("✘ 存是存下了，但**验证没通过**：" + (kj.verify_error || "未知原因"));
+      lines.push("上面那句是服务端的原话。值**保留着没有删** —— " +
+                 "如果是参数或密钥打错了，改对再点一次；如果是网关当时不稳，过一会儿再试。");
+    }
+    setRes("#setResBox", !!kj.verified, lines.join("\n"));
+    if (kj.verified && $("#setKey")) $("#setKey").value = "";
+    SETD = null; await loadSet();
+    if (!kj.verified && $("#setKey")) $("#setKey").value = pendingKey;
+    loadStatus();
+    return;
+  }
+  $("#btnSetSave").disabled = false;
+  if ($("#btnKeySave")) $("#btnKeySave").disabled = false;
+  setRes("#setResBox", true, formatSettingsReceipt(j).join("\n"));
   SETD = null; loadSet(); loadStatus();
+}
+
+async function resetSet() {
+  if (!confirm("清除项目级 config.json 里的自定义 API 配置，恢复到用户级/内置默认？\n\n修改前会自动备份原 config.json。")) return;
+  const btn = $("#btnSetReset");
+  if (btn) btn.disabled = true;
+  setRes("#setResBox", false, "正在清除自定义 API 配置并重建 agent…");
+  let r, j;
+  try {
+    r = await fetch("/api/settings/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  } catch (e) {
+    j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+  }
+  if (btn) btn.disabled = false;
+  if (!r || !r.ok || !j || !j.ok) {
+    setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+    return;
+  }
+  setRes("#setResBox", true,
+    (j.changed ? "已移除自定义 provider 覆盖（" + (j.removed || []).join("、") + "），已恢复默认配置。" : "当前没有自定义 provider 覆盖。")
+    + (j.backup ? "\n备份：" + j.backup : "")
+    + (j.rebuilt ? "\n已重建 agent，当前模型：" + (j.kernel_model || "-") : ""));
+  SETD = null; await loadSet(); loadStatus();
+}
+
+async function saveApiProfileUI() {
+  const name = ($("#setProfName") && $("#setProfName").value.trim()) || "";
+  if (!name) {
+    setRes("#setResBox", false, "请先填写 API 方案名称（如 DeepSeek / OpenAI）。");
+    return;
+  }
+  const payload = {
+    action: "save",
+    name: name,
+    model: ($("#setModel") && $("#setModel").value.trim()) || "",
+    base_url: ($("#setBaseUrl") && $("#setBaseUrl").value.trim()) || "",
+    reasoning_effort: ($("#setEffort") && $("#setEffort").value.trim()) || "high",
+    send_reasoning_effort: ($("#setSendEffort") && $("#setSendEffort").value === "1"),
+    max_tokens: ($("#setMax") && $("#setMax").value.trim()) || "",
+    api_key_env: ($("#setEnv") && $("#setEnv").value.trim()) || "",
+    stream_required: ($("#setStream") && $("#setStream").value === "1"),
+  };
+  let r, j;
+  try {
+    r = await fetch("/api/settings/profiles", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+    });
+    j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  } catch (e) {
+    j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+  }
+  if (!r || !r.ok || !j || !j.ok) {
+    setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+    return;
+  }
+  setRes("#setResBox", true, "已保存 API 方案「" + ((j.profile && j.profile.name) || name) + "」（密钥不写入方案文件）。");
+  SETD = null; await loadSet();
+}
+
+async function applyApiProfileUI(id) {
+  setRes("#setResBox", false, "正在切换到该 API 方案并重建 agent…");
+  let r, j;
+  try {
+    r = await fetch("/api/settings/profiles", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "apply", id: id })
+    });
+    j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  } catch (e) {
+    j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+  }
+  if (!r || !r.ok || !j || !j.ok) {
+    setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+    return;
+  }
+  setRes("#setResBox", true, formatSettingsReceipt(j).join("\n"));
+  SETD = null; await loadSet(); loadStatus();
+}
+
+async function deleteApiProfileUI(id) {
+  if (!confirm("删除这个已保存的 API 方案？\n\n这只会从方案列表移出，不会删掉本机 secrets.json 里的密钥。")) return;
+  let r, j;
+  try {
+    r = await fetch("/api/settings/profiles", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: id })
+    });
+    j = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  } catch (e) {
+    j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+  }
+  if (!r || !r.ok || !j || !j.ok) {
+    setRes("#setResBox", false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+    return;
+  }
+  setRes("#setResBox", true, "已删除选中的 API 方案。");
+  SETD = null; await loadSet();
 }
 
 /* ═════════════ W19-A · 密钥 ═════════════
@@ -6546,6 +7106,30 @@ async function saveKey(clear) {
   }
   const btn = clear ? $("#btnKeyClear") : $("#btnKeySave");
   if (btn) btn.disabled = true;
+  if ($("#btnSetSave")) $("#btnSetSave").disabled = true;
+  let cfgRes = null;
+  if (!clear && SETD) {
+    const { body, touched } = collectProviderDiff();
+    if (touched.length) {
+      setRes(box, false, "正在先保存改动过的服务端配置（" + touched.join("、") + "）…");
+      let sr, sj;
+      try {
+        sr = await fetch("/api/settings", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        sj = await sr.json().catch(() => ({ error: "响应不是 JSON" }));
+      } catch (e) {
+        sj = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
+      }
+      if (!sr || !sr.ok || !sj || !sj.ok) {
+        if (btn) btn.disabled = false;
+        if ($("#btnSetSave")) $("#btnSetSave").disabled = false;
+        setRes(box, false, "保存服务端配置失败，尚未验证密钥：" +
+          String((sj && sj.error) || ("HTTP " + (sr ? sr.status : "?"))));
+        return;
+      }
+      cfgRes = sj;
+    }
+  }
   setRes(box, false, clear ? "正在清掉本机保存的密钥…"
                            : "正在存到本机，并拿它真发一次请求验证…（可能要十几秒）");
   let r, j;
@@ -6558,9 +7142,15 @@ async function saveKey(clear) {
     j = { error: "接口没有应答：" + (e && e.message ? e.message : e) };
   }
   if (btn) btn.disabled = false;
+  if ($("#btnSetSave")) $("#btnSetSave").disabled = false;
   if (!r || !r.ok || !j || !j.ok) {
     // 服务端怎么说就怎么显示，一个字都不美化。
     setRes(box, false, String((j && j.error) || ("HTTP " + (r ? r.status : "?"))));
+    if (cfgRes) {
+      SETD = null; await loadSet();
+      if (!clear && $("#setKey")) $("#setKey").value = value;
+      loadStatus();
+    }
     return;
   }
   if (clear || j.cleared) {
@@ -6570,6 +7160,9 @@ async function saveKey(clear) {
     return;
   }
   const lines = [];
+  if (cfgRes) {
+    lines.push("已先保存配置：" + Object.keys(cfgRes.written || {}).map(k => "provider." + k + " = " + cfgRes.written[k]).join("；"));
+  }
   lines.push("已存 " + (j.chars || 0) + " 个字符到：" + (j.path || "-") +
              "（页面上不回显，这里也拿不到它的值）");
   if (j.verified) {
@@ -6582,8 +7175,10 @@ async function saveKey(clear) {
                "如果是密钥打错了，改对再点一次；如果看着是对的，可能是网关当时不稳，过一会儿再试。");
   }
   setRes(box, !!j.verified, lines.join("\n"));
-  if (inp) inp.value = "";
-  SETD = null; loadSet(); loadStatus();
+  if (j.verified && inp) inp.value = "";
+  SETD = null; await loadSet();
+  if (!j.verified && $("#setKey")) $("#setKey").value = value;
+  loadStatus();
 }
 
 /* ═════════════ composer ═════════════ */
@@ -6667,6 +7262,7 @@ $("#btnNew").onclick = () => {
    baseline / strict-v2 是对照夹具，不进这张表（不给人当任务选）。 */
 const PILL_PRESETS = {
   "起草写作": "paper-writing",
+  "一轮直出初稿": "paper-writing",
   "润色文字": "paper-writing",
   "文献检索": "lit-search",
   "引用核验": "lit-verify",
@@ -6676,10 +7272,11 @@ const PILL_PRESETS = {
   "统计审查": "stats-review",
   "配图": "figure",
   "汇报 PPT": "deck",
-  /* 第 8/9 份预设：前台入口由下面的 mountExtraPresets() 动态补进
+  /* 第 8/9/10 份预设：前台入口由下面的 mountExtraPresets() 动态补进
      「更多场景」折叠区，index.html 一个字都不用改。 */
   "精简上下文": "lean-context",
   "先答后问": "ext-answer-first",
+  "实验手记": "journal",
 };
 let PRESET = "";            // 会话级：追问继续沿用，#btnNew 才复位
 /* 内核回的是预设 id（英文），主视图一律说中文。判定仍只认 id，这张表只管显示。 */
@@ -6689,6 +7286,7 @@ const PRESET_LABELS = {
   "figure": "出版级配图", "deck": "汇报幻灯片",
   "ext-answer-first": "外部能力 · 先答后问",
   "lean-context": "精简上下文 · 按任务装配",
+  "journal": "岸记 · 实验手记",
 };
 const PILL_FORMS = {
   "润色文字": {
@@ -6723,6 +7321,29 @@ const PILL_FORMS = {
              { k: "n", label: "目标字数（留空 = 不限）", ph: "例如 1200", rows: 0 }],
     build: v => "按这个目标起草一份" + (v.n ? "约 " + v.n + " 字" : "") + "的正文，带可核验的引注，交付时附稿面体检报告：\n" + v.text,
   },
+  "一轮直出初稿": {
+    unattended: true,
+    fields: [{ k: "text", label: "主题、大纲要点与要求", ph: "研究主题、章节要点、需要包含的数据或文献要求…", rows: 5 },
+             { k: "n", label: "目标字数（如 4000）", ph: "例如 4000", rows: 0 }],
+    build: v => "请一次性生成结构完整、引注可核验、体例规范的高质量初稿（直接写入文件并完成图面与写作体检，尽量做到只需微调即可使用）" +
+      (v.n ? "，目标约 " + v.n + " 字" : "") + "：\n" + v.text,
+  },
+  "接收实验计划": {
+    fields: [{ k: "text", label: "实验计划内容（分条/含天数或日期）", ph: "1. 完成对照预实验（预计3天）\n2. 测定菌粉得率（预计5天）…", rows: 5 },
+             { k: "start", label: "起始日期（留空 = 今天）", ph: "例如 2026-11-20", rows: 0 }],
+    build: v => "请接收以下实验计划，调用 lab_plan 拆解为结构化实验步骤和带日期的后续跟进任务，并存入当前课题的实验台账" +
+      (v.start ? "（起始日期 " + v.start + "）" : "") + "：\n" + v.text,
+  },
+  "报告诊断": {
+    mentor: true,
+    opts: ["全面审稿（找硬伤）", "组会预演（会被问什么）", "开题答辩（深挖细枝末节）"], opt0: 0,
+    fields: [{ k: "text", label: "报告/汇报/草稿内容（或先拖入文件）", ph: "把要审查的报告内容贴在这里，或写清工作区文件名…", rows: 5 }],
+    build: (v, opt) => (opt && opt.indexOf("组会") >= 0
+      ? "明天组会要汇报下面这份材料，请用导师预演视角指出台下会被当面问住的问题、证据缺口和怎么答：\n"
+      : opt && opt.indexOf("开题") >= 0
+      ? "准备开题答辩，请针对下面这份材料一路往下追问细枝末节，帮我查出真正答不出来的地方：\n"
+      : "请以导师视角审查下面这份报告，按四个镜头逐条指出论断、方法、数字复算与边界反例上的潜在问题：\n") + v.text,
+  },
   "统计审查": {
     fields: [{ k: "text", label: "结果描述", ph: "把结果描述贴在这里", rows: 5 }],
     build: v => "审查我这份结果的统计报告：实验单元与重复有没有分清、不确定度怎么给的、检验方法与多重比较是否匹配，逐项指出问题与改法：\n" + v.text,
@@ -6745,6 +7366,8 @@ function pillFormOpen(label, chip) {
   PRESET = PILL_PRESETS[(chip && chip.dataset.form) || label] || "";
   const cfg = PILL_FORMS[label];
   if (!cfg) return false;        // 无表单配置 → 调用方回退到 data-goal 直填
+  if (cfg.unattended && typeof setUnattended === "function") setUnattended(true);
+  if (cfg.mentor && typeof setMentor === "function") setMentor(true);
   PF_STATE = { cfg, label, opt: cfg.opts ? cfg.opts[cfg.opt0 || 0] : null };
   const bar = $("#pillForm");
   const main = cfg.fields[0];
@@ -6801,6 +7424,8 @@ function pillFormApply() {
      "用最精简的上下文把这件事讲清楚：先给结论，再给依据，最后列一条还没核实的点。"],
     ["先答后问", "先答后问",
      "先直接回答我的问题，再说明依据和不确定处；不要一上来就反问，也不要只给提纲。"],
+    ["实验手记", "实验手记",
+     "把今天的实验进展与下一步规划记入《岸记》：先开页定今日问，再按起/验/收/明日记一笔并重渲染日记本。"],
   ];
   extras.forEach(([form, label, goal]) => {
     const b = document.createElement("button");
@@ -6812,6 +7437,28 @@ function pillFormApply() {
     panel.appendChild(b);
   });
   panel.dataset.extPresets = "1";
+})();
+(async function syncPresetsFromServer() {
+  try {
+    const d = await api("/api/presets");
+    if (!d || typeof d !== "object") return;
+    (d.good || []).forEach(it => {
+      if (it && it.id && it.name && !PRESET_LABELS[it.id]) {
+        PRESET_LABELS[it.id] = it.name;
+      }
+    });
+    const badFiles = Array.isArray(d.broken) ? d.broken : [];
+    const badMounts = (d.good || []).filter(it => it && it.healthy === false);
+    if (badFiles.length || badMounts.length) {
+      const msg = badFiles.map(b => b.id + ": " + b.why)
+        .concat(badMounts.map(b => b.id + ": " + (b.broken || []).join("; ")))
+        .join(" ｜ ");
+      const h = $("#hint");
+      if (h && !h.textContent) {
+        h.innerHTML = '<span style="color:var(--warn)">能力预设自检发现异常：' + esc(msg) + "</span>";
+      }
+    }
+  } catch (_) {}
 })();
 document.querySelectorAll(".chip").forEach(c => {
   c.onclick = () => {
@@ -7027,8 +7674,12 @@ async function replay(id) {
   LIVE = false; T0 = Date.now();
   /* 回放开始前先无条件置关 —— 下面那圈事件里若有 `mentor_mode`，
      它会把开关摆回**那次会话当时**的位置；没有那条事件就是当时没开。
-     顺序很重要：不先清掉，上一场残留的"开"会被读成这一场也开（串台）。 */
+     顺序很重要：不先清掉，上一场残留的"开"会被读成这一场也开（串台）。
+     ★ PRESET 同理：先按归档快照复位（空串 = baseline），随后事件流里的
+       `preset_mounted` / `run_shape` / `run_plan` 会还原该会话真实预设，
+       彻底杜绝「先点胶囊、再点历史会话追问」把上一颗胶囊的预设串进旧会话。 */
   setMentor(false);
+  PRESET = d.preset || "";
   delete $("#title").dataset.quiet;
   $("#title").textContent = d.goal || id;
   // 必须在 finish() **之前**设：finish→renderResult→decisions 当场就要读它。
@@ -7115,3 +7766,56 @@ async function replay(id) {
      ⇒ 纪律：块注释里**永远不要出现那两个字符连写**，不管你是不是在解释它。
         要举例就写"星号加斜杠"。 */
 /* 稿件台逻辑见 reader.js。 */
+
+let RK_HUB_SEQ = 0;
+async function refreshRkHub() {
+  const topEl = $("#rkHubTopic"), statEl = $("#rkHubStats");
+  if (!topEl || !statEl) return;
+  const seq = ++RK_HUB_SEQ;
+  try {
+    const d = await api("/api/topic/ecosystem");
+    if (seq !== RK_HUB_SEQ) return;
+    if (!d || d.no_topic) {
+      topEl.textContent = "未选定";
+      statEl.textContent = "";
+      return;
+    }
+    const title = (d.topic && d.topic.title) || d.slug || "默认课题";
+    topEl.textContent = title;
+    const lp = d.lab || {};
+    const pct = typeof lp.overall_pct === "number" ? Math.round(lp.overall_pct) : 0;
+    const due = ((lp.counts && lp.counts.overdue_total) || 0) + ((lp.counts && lp.counts.today_total) || 0);
+    const mCnt = (d.methods && d.methods.count) || 0;
+    statEl.textContent = " · 实验进度 " + pct + "% · 待办 " + due + " · 方法 " + mCnt;
+  } catch (e) {
+    if (seq !== RK_HUB_SEQ) return;
+    topEl.textContent = "默认课题";
+    statEl.textContent = "";
+  }
+}
+
+function initRkHub() {
+  const emptyEl = $("#empty");
+  if (!emptyEl) return;
+  emptyEl.addEventListener("click", e => {
+    const btn = e.target && e.target.closest ? e.target.closest("[data-rk-cmd]") : null;
+    if (!btn) return;
+    const cmd = btn.dataset.rkCmd;
+    const goalEl = $("#goal");
+    if (cmd === "open-mentor-mgr") {
+      goView("mentor");
+    } else if (cmd === "toggle-mentor") {
+      toggleMentor();
+    } else if (cmd === "direct-draft") {
+      if (!pillFormOpen("一轮直出初稿") && goalEl) goalEl.focus();
+    } else if (cmd === "plan-import") {
+      goView("lab");
+      if (window.RongkeLab && typeof RongkeLab.showTab === "function") RongkeLab.showTab("plan");
+    } else if (cmd === "mentor-guide") {
+      goView("mentor");
+    } else if (cmd === "mentor-critique") {
+      if (!pillFormOpen("报告诊断") && goalEl) goalEl.focus();
+    }
+  });
+}
+initRkHub();

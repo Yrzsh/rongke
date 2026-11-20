@@ -242,28 +242,51 @@ def main() -> int:
 
     reg = ToolRegistry()
     n0 = len(reg)
+    # ★ 2026-11-09 用户裁决「有些插件就必须要加载」：常驻能力（稿件台）
+    #   不进预设、不点胶囊，但每场都会注册工具。老判据「baseline 不注册
+    #   任何工具」的前提被推翻，这里按 caps.always_on_tool_names() 单源
+    #   改成「多出来的必须恰好是常驻工具」，不是把断言改软。
+    from rongke.caps import always_on_tool_names
+    ALWAYS = always_on_tool_names()
     b = caps.load_capability_preset("baseline", ctx={"registry": reg})
-    check("baseline 不注册任何工具", len(reg), n0)
-    check("baseline 撤销清单为空", b.registered_tools, [])
+    check("baseline 只多出常驻工具", len(reg), n0 + len(ALWAYS))
+    check("常驻工具真在册（不是只写在配置里）",
+          all(reg.get(x) is not None for x in ALWAYS), True)
+    check("baseline 撤销清单为空（常驻工具长命、不撤销）",
+          b.registered_tools, [])
     p = caps.load_capability_preset("paper-writing", ctx={"registry": reg})
-    check("paper-writing 挂上 writing_metrics", reg.get("writing_metrics") is not None)
-    check("登记了本次新增工具", p.registered_tools, ["writing_metrics"])
+    check("paper-writing 挂上 writing_metrics 与 source_alignment",
+          reg.get("writing_metrics") is not None
+          and reg.get("source_alignment") is not None)
+    check("登记了本次新增工具", p.registered_tools,
+          ["writing_metrics", "source_alignment"])
     check("挂载事件里看得到新增清单",
-          p.to_dict().get("registered_tools"), ["writing_metrics"])
+          p.to_dict().get("registered_tools"),
+          ["writing_metrics", "source_alignment"])
     for _t in p.registered_tools:
         reg.unregister(_t)
     b.invalidate_mount_cache()
-    check("撤销后工具总数回落", len(reg), n0)
-    check("撤销后 writing_metrics 不在", reg.get("writing_metrics") is None)
+    check("撤销后工具总数回落到 baseline（常驻工具仍在）",
+          len(reg), n0 + len(ALWAYS))
+    check("撤销后两个工具都不在",
+          reg.get("writing_metrics") is None
+          and reg.get("source_alignment") is None)
 
-    # 负控：原本就有的同名工具既不许被覆盖，也不许进撤销清单
-    own = Tool(name="writing_metrics", description="第三方工具",
-               parameters={"type": "object", "properties": {}},
-               fn=lambda **kw: "third", domain="core", source="external")
+    # 负控：原本就有的同名工具既不许被覆盖，也不许进撤销清单。
+    # ★ 预设每多一个工具，这里就要多挂一个「别人的同名工具」——
+    #   否则新工具会落进撤销清单，而判据只盯着旧工具，反而测不到泄漏。
+    def _own(name):
+        return Tool(name=name, description="第三方工具",
+                    parameters={"type": "object", "properties": {}},
+                    fn=lambda **kw: "third", domain="core", source="external")
+    own, own2 = _own("writing_metrics"), _own("source_alignment")
     reg2 = ToolRegistry()
     reg2.register(own)
+    reg2.register(own2)
     p2 = caps.load_capability_preset("paper-writing", ctx={"registry": reg2})
-    check("已存在的同名工具不被覆盖", reg2.get("writing_metrics") is own)
+    check("已存在的同名工具都不被覆盖",
+          reg2.get("writing_metrics") is own
+          and reg2.get("source_alignment") is own2)
     check("别人的工具不进撤销清单", p2.registered_tools, [])
 
     # 真跑 Rongke.run() 的入口与收尾（只把 _run_serial 换成替身，不烧模型）
@@ -424,6 +447,9 @@ def main() -> int:
                                caps=caps.load_capability_preset("strict-v2"))
         _ml = initial_messages(_c, topics_root=Path(_td2),
                                caps=caps.load_capability_preset("lean-context"))
+    # 2026-11-09：常驻插件只常驻**工具**，不往 SYSTEM 加段 —— 体例要求走
+    #   工具回包的过程反馈。所以下面三条「逐字节等价」判据一字未动，
+    #   继续守着 baseline 等价裁决（这条红线不该为前端插件让路）。
     check("不带预设 ⇒ system 就是 SYSTEM 原文本", _m0[0]["content"], SYSTEM)
     check("baseline ⇒ 逐字节等价（一个字都不加）", _mb[0]["content"], SYSTEM)
     check("stats-review ⇒ 清单真进了 system", "统计审查清单" in _ms[0]["content"])

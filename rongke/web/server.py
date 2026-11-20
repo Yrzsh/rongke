@@ -36,7 +36,9 @@ from pathlib import Path
 from typing import Any
 
 from ..config import (DEFAULTS, Config, PROVIDER_WRITE_KEYS, data_root,
-                      project_root, provider_write_key, save_provider_overrides,
+                      delete_api_profile, list_api_profiles, project_root,
+                      provider_write_key, reset_provider_overrides,
+                      save_api_profile, save_provider_overrides,
                       save_secret, secrets_path)
 from ..loop import Rongke, SNAPSHOT_INTERNAL
 from ..memory import ArchivedUsageCache, Memory, archived_usage, default_root
@@ -254,6 +256,34 @@ def kb_only_from(body: dict) -> bool:
     return bool(v)
 
 
+def bool_from(body: dict, key: str, default: bool) -> bool:
+    """请求级布尔开关的**唯一读法**（缺席 = 默认，不猜上一个状态）。
+
+    与 `kb_only_from` 的区别：`kb_only` 缺省关，这两个开关一个是「默认开」
+    （历史参考）、一个是「默认关」（无人值守）。写死各自的默认值，
+    免得哪天有人把默认改成 True 而无人值守悄悄生效。
+    """
+    v = (body or {}).get(key)
+    if v is None:
+        return default
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("", "auto"):
+            return default
+        return s in ("1", "true", "on", "yes")
+    return bool(v)
+
+
+def recall_from(body: dict) -> bool:
+    """是否注入跨任务「历史参考」。A/B 真任务对照必须能关掉它。"""
+    return bool_from(body, "recall", True)
+
+
+def unattended_from(body: dict) -> bool:
+    """无人值守：不弹窗等人（按原路继续），避免自动化场景白等 300 s。"""
+    return bool_from(body, "unattended", False)
+
+
 def mentor_from_snapshot(snap: dict | None) -> bool:
     """这场会话**当时**开没开导师模式 —— 唯一说得通的依据是消息栈里那段在不在。
 
@@ -266,6 +296,177 @@ def mentor_from_snapshot(snap: dict | None) -> bool:
     from ..loop import MENTOR_MARK
     return any(MENTOR_MARK in str(m.get("content") or "")
                for m in ((snap or {}).get("messages") or []))
+
+
+def _restore_session_fields(snap: dict | None = None,
+                            ws: Path | None = None,
+                            arc: dict | None = None) -> dict[str, str]:
+    """从快照（`conversation*.json`）与归档（`session.json`）恢复会话级 `preset`/`mode`/`advisor`。
+
+    注意：只读显式落盘的结构化字段或已发射事件，绝不从提示词正文去猜导师名字。
+    """
+    s = snap if isinstance(snap, dict) else None
+    if s is None and ws is not None:
+        for name in ("conversation.json", "conversation.done.json"):
+            p = Path(ws) / name
+            if p.is_file():
+                try:
+                    loaded = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        s = loaded
+                        break
+                except Exception:                            # noqa: BLE001
+                    pass
+    s = s or {}
+    rp = s.get("run_plan") if isinstance(s.get("run_plan"), dict) else {}
+    preset = str(rp.get("preset") or s.get("preset") or "").strip()
+    mode = str(rp.get("mode") or s.get("mode") or "").strip()
+    advisor = str(rp.get("advisor") or s.get("advisor") or "").strip()
+
+    a = arc if isinstance(arc, dict) else None
+    if (not preset or not mode or not advisor) and a is None and ws is not None:
+        ap = Path(ws) / "session.json"
+        if ap.is_file():
+            try:
+                loaded_a = json.loads(ap.read_text(encoding="utf-8"))
+                if isinstance(loaded_a, dict):
+                    a = loaded_a
+            except Exception:                                # noqa: BLE001
+                pass
+    if isinstance(a, dict):
+        res_obj = a.get("result") if isinstance(a.get("result"), dict) else {}
+        preset = preset or str(a.get("preset") or res_obj.get("preset") or "").strip()
+        mode = mode or str(a.get("mode") or res_obj.get("mode") or "").strip()
+        advisor = advisor or str(a.get("advisor") or res_obj.get("advisor") or "").strip()
+        for ev in (a.get("events") or []):
+            if not isinstance(ev, dict):
+                continue
+            k = ev.get("kind")
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if not preset and k in ("preset_mounted", "preset_stages", "run_shape", "run_plan"):
+                preset = str(d.get("preset") or "").strip()
+            if not advisor and k == "mentor_mode":
+                advisor = str(d.get("advisor") or "").strip()
+            if not mode and k == "mode" and d.get("by") == "user":
+                m_val = str(d.get("mode") or "").strip()
+                if m_val in ("task", "answer"):
+                    mode = m_val
+    return {"preset": preset, "mode": mode, "advisor": advisor}
+
+
+def _row_to_idx(letters: str) -> int:
+    """把板行字母（A..Z / AA..）转成 1-based 行号。"""
+    idx = 0
+    for ch in letters.upper():
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx
+
+
+def _idx_to_row(idx: int) -> str:
+    """把 1-based 行号转成板行字母（1→A, 8→H, 16→P）。"""
+    chars: list[str] = []
+    n = idx
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        chars.append(chr(ord("A") + rem))
+    return "".join(reversed(chars))
+
+
+def _norm_well_id(w: str) -> str:
+    """把单个孔号规范成大写去前导零形式（如 a01 -> A1）；非标准格式保持大写原样。"""
+    s = str(w or "").strip()
+    m = re.fullmatch(r"([A-Za-z]{1,2})(\d{1,2})", s)
+    if m:
+        return f"{m.group(1).upper()}{int(m.group(2))}"
+    return s.upper()
+
+
+def _parse_well_list(raw) -> list[str]:
+    """把孔位列表或字符串（支持 A1-A6 / A1-H1 范围展开）解析成大写孔号清单。"""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        tokens = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        s = re.sub(r"\s*-\s*", "-", str(raw).strip())
+        tokens = [t for t in re.split(r"[\s,;，；]+", s) if t]
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        m_rng = re.fullmatch(r"([A-Za-z]{1,2})(\d{1,2})-([A-Za-z]{1,2})(\d{1,2})", tok)
+        if m_rng:
+            r1, c1 = _row_to_idx(m_rng.group(1)), int(m_rng.group(2))
+            r2, c2 = _row_to_idx(m_rng.group(3)), int(m_rng.group(4))
+            if r1 < 1 or c1 < 1 or r2 < 1 or c2 < 1:
+                continue
+            if (abs(r2 - r1) + 1) * (abs(c2 - c1) + 1) > 1536:
+                raise ValueError(f"孔位范围过大：{tok}")
+            r_step = 1 if r1 <= r2 else -1
+            c_step = 1 if c1 <= c2 else -1
+            for ri in range(r1, r2 + r_step, r_step):
+                rl = _idx_to_row(ri)
+                for ci in range(c1, c2 + c_step, c_step):
+                    w = f"{rl}{ci}"
+                    if w not in seen:
+                        seen.add(w)
+                        out.append(w)
+            continue
+        m_one = re.fullmatch(r"([A-Za-z]{1,2})(\d{1,2})", tok)
+        if m_one:
+            w = f"{m_one.group(1).upper()}{int(m_one.group(2))}"
+            if w not in seen:
+                seen.add(w)
+                out.append(w)
+    return out
+
+
+def _parse_plate_wells(raw) -> dict[str, Any]:
+    """把孔板读数（dict / A1=1.23 键值对 / 8×12 网格文本）解析成 {孔号: 原始值}。"""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {_norm_well_id(k): v for k, v in raw.items() if str(k or "").strip()}
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    pairs = re.findall(r"([A-Za-z]{1,2}\d{1,2})\s*[:=]\s*([^\s,;]+)", text)
+    if pairs:
+        return {_norm_well_id(w): v for w, v in pairs}
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    wells: dict[str, Any] = {}
+    row_idx = 0
+    for idx, ln in enumerate(lines):
+        if "\t" in ln:
+            cells = [c.strip() for c in ln.split("\t")]
+        elif "," in ln:
+            cells = [c.strip() for c in ln.split(",")]
+        elif ";" in ln:
+            cells = [c.strip() for c in ln.split(";")]
+        else:
+            cells = ln.split()
+        if not cells:
+            continue
+        if idx == 0 and len(lines) > 1:
+            head0 = cells[0].lower()
+            rest = cells[1:]
+            next_first = re.split(r"[\t,; ]+", lines[1].strip())[0]
+            if head0 in ("", "row", "well", "<>", "#") and rest and all(re.fullmatch(r"\d{1,2}", c) for c in rest):
+                continue
+            if all(re.fullmatch(r"\d{1,2}", c) for c in cells) and len(cells) >= 3 and re.fullmatch(r"[A-Pa-p]", next_first):
+                continue
+        if re.fullmatch(r"[A-Pa-p]", cells[0]) and len(cells) > 1:
+            row_label = cells[0].upper()
+            vals = cells[1:]
+            row_idx = _row_to_idx(row_label)
+        else:
+            row_label = _idx_to_row(row_idx + 1)
+            vals = cells
+            row_idx += 1
+        for col_i, val in enumerate(vals, 1):
+            wells[f"{row_label}{col_i}"] = val
+    return wells
 
 
 @dataclass
@@ -281,6 +482,10 @@ class Run:
     # ★ 能力预设：这一场会话用哪套判据/门/工具。绑在 Run 上而不是全局，
     #   追问才能从 `prev.preset` 认回父轮那一套（长命单例不重建）。
     preset: str = ""
+    # 真任务 A/B 的干净对照开关：`recall=False` 不注入历史参考，
+    # `unattended=True` 不弹窗等人。两者都**只作用于本场 Run**。
+    recall: bool = True
+    unattended: bool = False
     events: list[dict] = field(default_factory=list)
     done: bool = False
     result: dict | None = None
@@ -302,6 +507,10 @@ class Run:
     #   分清的理由：状态一旦在前端/服务端各存一份，重启后就成了猜的。
     #   默认 `False`：不许默认开（那会悄悄改变所有人的行为，见工单 §1）。
     mentor: bool = False
+    # 这一场用**谁的判断方式**（`topics/advisors/<slug>`）。空串 = 只用通用导师视角。
+    #   与 `mentor` 的关系是「开关」与「判准」：开关决定进不进导师立场，
+    #   它决定进去之后按哪个人的标准判断。两者都不许在前端各存一份。
+    advisor: str = ""
     # ── 运行中问人（评审第①条）──
     ask: dict | None = None            # 当前挂起的问题；None = 没在等人
     _answer: dict | None = None        # 人给的答复（一次性）
@@ -383,6 +592,9 @@ class Run:
                 "id": self.id, "goal": self.goal, "done": self.done,
                 "events": list(self.events), "result": self.result, "error": self.error,
                 "elapsed": round((self.finished or time.time()) - self.started, 1),
+                "preset": self.preset,
+                "mode": self.mode,
+                "advisor": self.advisor,
                 # 带上"正在等你回答什么"：否则刷新页面后那张介入卡就消失了，
                 # 而内核还在等 —— 界面与内核各说各话（B 型）。
                 "ask": dict(self.ask) if self.ask else None,
@@ -456,6 +668,7 @@ class Manager:
     def boot(self) -> None:
         try:
             self.kernel = Rongke()
+            self.kernel_error = ""
         except Exception as e:
             self.kernel = None
             self.kernel_error = f"{type(e).__name__}: {e}"
@@ -1315,6 +1528,84 @@ class Manager:
         out["note"] = "已移除（原件挪到了 _removed，可找回）"
         return out
 
+    @staticmethod
+    def _trash_dir() -> Path:
+        d = ws_dir() / "_trash"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _hidden_runs_path(self) -> Path:
+        return self._trash_dir() / "_hidden_runs.json"
+
+    def _hidden_runs(self) -> set[str]:
+        p = ws_dir() / "_trash" / "_hidden_runs.json"
+        if not p.is_file():
+            return set()
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return set()
+        if not isinstance(data, list):
+            return set()
+        return {str(x).strip() for x in data if str(x).strip()}
+
+    def _hide_run_id(self, rid: str) -> None:
+        hidden = self._hidden_runs()
+        hidden.add(rid)
+        target = self._hidden_runs_path()
+        tmp = target.with_name(target.name + f".tmp-{uuid.uuid4().hex[:8]}")
+        tmp.write_text(json.dumps(sorted(hidden), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+
+    def drop_run(self, rid: str) -> tuple[dict | None, int, str]:
+        """把一次历史任务移出历史列表；盘上工作区移入 `runs/_trash/`（零删除铁律）。"""
+        rid_s = str(rid or "").strip()
+        if (not rid_s or not re.fullmatch(r"[A-Za-z0-9._-]+", rid_s)
+                or rid_s.startswith("_") or rid_s.startswith(".") or ".." in rid_s):
+            return None, 400, "非法的任务编号"
+        if self.active == rid_s or (rid_s in self.runs and not self.runs[rid_s].done):
+            return None, 409, "任务正在运行，请先停止后再移除。"
+        src = ws_dir() / rid_s
+        hidden = self._hidden_runs()
+        has_dir = src.exists()
+        in_runs = rid_s in self.runs
+        in_ledger = False
+        if not has_dir and not in_runs:
+            try:
+                for r in Memory(default_root()).recent_runs(500):
+                    cand = str(r.get("run_id") or "")
+                    if not cand:
+                        _ws = str(r.get("workspace") or "").replace("\\", "/").rstrip("/")
+                        cand = _ws.rsplit("/", 1)[-1] if _ws else ""
+                    if cand == rid_s:
+                        in_ledger = True
+                        break
+            except Exception:
+                pass
+        if not has_dir and not in_runs and (not in_ledger or rid_s in hidden):
+            return None, 404, "任务不存在或已移出历史"
+        moved = False
+        kept_at = ""
+        if has_dir:
+            trash = self._trash_dir()
+            stamp = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+            dest = trash / f"{rid_s}-{stamp}"
+            try:
+                shutil.move(str(src), str(dest))
+                moved = True
+                kept_at = str(dest)
+            except OSError as e:
+                return None, 409, f"工作区目录正被占用，暂时移不动（{type(e).__name__}: {e}）"
+        self._hide_run_id(rid_s)
+        self.runs.pop(rid_s, None)
+        self._hist_cache.pop(rid_s, None)
+        self._artifact_cache.pop(str(src.resolve()), None)
+        with self._usage_cache._lock:
+            self._usage_cache._rows.clear()
+        note = (f"已移出历史（工作区已移至 {kept_at}，可找回）" if moved
+                else "已从历史列表隐藏（该任务无独立工作区目录）")
+        return {"ok": True, "id": rid_s, "moved": moved, "kept_at": kept_at, "note": note}, 200, ""
+
     def take_inbox(self) -> Path | None:
         """把材料区**改名**成这次任务的正式工作区并交出去；没有材料则 None。
 
@@ -1360,7 +1651,10 @@ class Manager:
     def start(self, goal: str, max_steps: int | None,
               contract: dict | None = None,
               mentor: bool = False,
-              mode: str = "", preset: str = "") -> tuple[Run | None, str]:
+              mode: str = "", preset: str = "",
+              recall: bool = True,
+              unattended: bool = False,
+              advisor: str = "") -> tuple[Run | None, str]:
         with self._lock:
             # ★ 授权闸门在**起线程之前**、也在"忙"之前。放到线程里就晚了一步：
             #   那个 Run 已经进了 self.runs、会话已经建好，失败时界面会
@@ -1382,7 +1676,9 @@ class Manager:
                 return None, f"内核未就绪：{self.kernel_error}"
             run = Run(id=uuid.uuid4().hex[:12], goal=goal, max_steps=max_steps,
                       contract=contract, mentor=mentor, mode=mode,
-                      preset=str(preset or "").strip())
+                      preset=str(preset or "").strip(),
+                      recall=bool(recall), unattended=bool(unattended),
+                      advisor=str(advisor or "").strip())
             # 有材料 ⇒ 这次任务就跑在材料区改名后的那个目录里（原文件原位、零拷贝）
             ws = self.take_inbox()
             if ws is not None:
@@ -1439,10 +1735,13 @@ class Manager:
             return None, "快照里没有对话内容，接着跑没有意义"
         # 续跑**半截任务**时的开关口径：看快照，不看前端（见 `mentor_from_snapshot`）。
         _mentor_on = mentor_from_snapshot(snap)
+        _meta = _restore_session_fields(snap, ws)
         with self._lock:
             run = Run(id=uuid.uuid4().hex[:12],
                       goal=str(snap.get("goal") or ""),
-                      resume=snap, workspace=str(ws), mentor=_mentor_on)
+                      resume=snap, workspace=str(ws), mentor=_mentor_on,
+                      preset=_meta["preset"], mode=_meta["mode"],
+                      advisor=_meta["advisor"])
             self.runs[run.id] = run
             self.active = run.id
         threading.Thread(target=self._exec, args=(run,), daemon=True).start()
@@ -1516,7 +1815,7 @@ class Manager:
     # ── 会话内追问 ──────────────────────────────────────────
     def follow_up(self, rid: str, text: str,
                   mentor: "bool | None" = None, mode: str = "",
-                  preset: str = "") -> tuple[Run | None, str]:
+                  preset: str = "", advisor: str = "") -> tuple[Run | None, str]:
         """接着一个**已开过头的会话**继续说（ZCode 式连续会话的那一半）。
 
         与 `resume()` 的分工：`resume` 接的是**半截任务**（conversation.json 还在）；
@@ -1604,15 +1903,30 @@ class Manager:
         # 不与 `resume()` 各写一套）。
         if mentor is None:
             mentor = mentor_from_snapshot(snap)
+        # 导师模型的口径：与导师开关**相反** —— 这里不能从快照推。
+        #   开关是一个布尔，能从提示词里认出来；而「用哪位导师」是一个名字，
+        #   提示词里只有他的判准、没有 slug。拼不出来就不猜：没给就认回父轮那个。
+        _meta = _restore_session_fields(snap, ws)
+        _adv = (str(advisor or "").strip()
+                or _meta["advisor"]
+                or str(getattr(prev, "advisor", "") or ""))
         with self._lock:
-            # 追问没带 preset（老前端 / 直接打接口）⇒ 认回父轮那一套，
-            # 否则同一场会话前后两轮会按不同的尺子写（实测 C 场的形状）。
+            # 追问没带 preset（老前端 / 直接打接口 / 跨重启）⇒ 优先从快照/归档认回，
+            # 其次认内存里 `prev.preset`，否则同一场会话前后两轮会按不同的尺子写。
             explicit = str(preset or "").strip()
-            inherited = explicit or (str(getattr(prev, "preset", "") or "")
-                                     if prev is not None else "")
+            inherited = (explicit
+                         or _meta["preset"]
+                         or (str(getattr(prev, "preset", "") or "")
+                             if prev is not None else ""))
+            _eff_mode = str(mode or "").strip()
+            if _eff_mode in ("", "auto"):
+                _eff_mode = (_meta["mode"]
+                             or (str(getattr(prev, "mode", "") or "")
+                                 if prev is not None else "")
+                             or _eff_mode)
             run = Run(id=uuid.uuid4().hex[:12], goal=text,
                       resume=snap, workspace=str(ws), mentor=bool(mentor),
-                      mode=mode, preset=inherited)
+                      mode=_eff_mode, preset=inherited, advisor=_adv)
             self.runs[run.id] = run
             self.active = run.id
         threading.Thread(target=self._exec, args=(run,), daemon=True).start()
@@ -1640,6 +1954,9 @@ class Manager:
                 # 没有工作区可查，跑完之后「接着说」就找不到这份会话（见 follow_up）。
                 if kind == "workspace" and not run.workspace:
                     run.workspace = str(data.get("path") or "")
+                elif kind in ("preset_mounted", "run_shape", "run_plan") and not run.preset:
+                    if isinstance(data, dict) and data.get("preset"):
+                        run.preset = str(data.get("preset") or "").strip()
                 run.push(kind, data)
 
             result = self.kernel.run(
@@ -1655,11 +1972,16 @@ class Manager:
                 #   内核拿它去决定首条消息里注入不注入那段纪律、以及跑完算不算
                 #   那三条出处判据 —— 见 `loop.initial_messages(kb_only=…)`。
                 kb_only=bool(run.mentor),
+                # ★ 导师模型：这一场按谁的判断方式。空串 ⇒ 只用通用导师视角。
+                #   与 mentor 同一条纪律 —— **真的进内核**，不是只改界面标签。
+                advisor_slug=str(run.advisor or ""),
                 # ★ W36 模式开关：用户按的「任务模式 / 仅问答」真的进内核。
                 #   `""` 时内核按契约起草器的判断走（不猜用户的意图）。
                 mode=str(run.mode or ""),
                 # ★ 能力预设：绑本次 run，不重建长命单例。
                 preset=str(run.preset or ""),
+                # ★ 真任务对照开关：关历史参考 / 无人值守不弹窗。
+                recall=bool(run.recall), unattended=bool(run.unattended),
             )
             run.finish(result.to_dict())
         except Exception as e:
@@ -1699,6 +2021,10 @@ class Manager:
         run.error = str(j.get("error") or "")
         run.started = float(j.get("started") or 0)
         run.finished = float(j.get("finished") or 0)
+        _meta = _restore_session_fields(None, ws_dir() / run.id, arc=j)
+        run.preset = _meta["preset"]
+        run.mode = _meta["mode"]
+        run.advisor = _meta["advisor"]
         # 能不能接着跑，只取决于**对话快照**在不在（不是归档在不在）。
         run.resumable = (ws_dir() / run.id / "conversation.json").is_file()
         return run
@@ -1798,6 +2124,7 @@ class Manager:
         """
         seen: set[str] = set()
         out: list[dict] = []
+        hidden = self._hidden_runs()
         try:
             base = ws_dir()
             if base.exists():
@@ -1807,7 +2134,7 @@ class Manager:
                     # 是夹具凑出来的，不是用户真跑过的任务 —— 列进去就是往用户的历史里
                     # 塞假记录。（`ui_shot.latest_archive()` 早就是这么筛的：同一个目录，
                     # 两处判"什么算一个任务"必须给同一个答案，否则就是两副面孔。）
-                    if d.name.startswith("_"):
+                    if d.name.startswith("_") or d.name in hidden:
                         continue
                     f = d / "session.json"
                     if not d.is_dir() or not f.is_file():
@@ -1830,8 +2157,8 @@ class Manager:
                     # 实测就是这样（19:31 与 19:30 两行同目标）。
                     _ws = str(r.get("workspace") or "").replace("\\", "/").rstrip("/")
                     rid = _ws.rsplit("/", 1)[-1] if _ws else ""
-                if rid and rid in seen:
-                    continue                     # 与归档重复；归档那行信息更全，留归档
+                if rid and (rid in seen or rid in hidden):
+                    continue                     # 与归档重复或已移出历史
                 out.append({
                     "id": rid,
                     "goal": r.get("goal") or "",
@@ -2165,13 +2492,22 @@ class Manager:
         pv = cfg.provider
         files = []
         for scope, path in (("用户级", Path.home() / ".rongke" / "config.json"),
-                            ("项目级（写入落点）", project_root() / "config.json")):
+                            ("项目级（写入落点）", data_root() / "config.json")):
             files.append({"scope": scope, "path": str(path), "exists": path.is_file()})
         # 「我改的为什么没生效」的另一个常见答案是环境变量 —— 它在 config.json
         # **之上**，所以只报配置文件会漏掉整整一层。不列出来就是让人对着
         # 一个改对了却仍不生效的界面发呆。
         env_over = [{"key": k, "var": v, "set": bool(os.environ.get(v))}
                     for k, v in self.ENV_OVERRIDE_VARS]
+        proj_cfg_path = data_root() / "config.json"
+        custom_keys: list[str] = []
+        if proj_cfg_path.is_file():
+            try:
+                raw_cfg = json.loads(proj_cfg_path.read_text(encoding="utf-8"))
+                if isinstance(raw_cfg, dict) and isinstance(raw_cfg.get("provider"), dict):
+                    custom_keys = sorted(str(k) for k in raw_cfg["provider"].keys())
+            except Exception:
+                pass
         return {
             "provider": {
                 "name": pv.name, "base_url": pv.base_url, "model": pv.model,
@@ -2189,6 +2525,9 @@ class Manager:
             "key_from_env": bool(os.environ.get(pv.api_key_env, "").strip()),
             "secrets_path": str(secrets_path()),
             "key_in_secrets_file": self._key_in_secrets_file(pv.api_key_env),
+            "has_custom_provider": bool(custom_keys),
+            "custom_provider_keys": custom_keys,
+            "profiles": list_api_profiles(),
             "model_default": str(DEFAULTS["provider"]["model"]),
             "reasoning_choices": list(REASONING_CHOICES),
             "fields": provider_field_specs(),
@@ -2324,6 +2663,87 @@ class Manager:
                                    "请在「接口密钥」里填 magpie 后点保存。")
             return out, ""
 
+    def settings_reset(self) -> tuple[dict | None, str]:
+        """清空项目级 `config.json` 里的自定义 provider 覆盖，恢复默认配置。"""
+        with self._settings_lock:
+            try:
+                res = reset_provider_overrides()
+            except Exception as e:                          # noqa: BLE001
+                return None, f"重置失败，配置没有改动：{type(e).__name__}: {e}"
+            self.boot()
+            st = self.status()
+            cfg_now = Config.load()
+            env_now = str(cfg_now.provider.api_key_env or "")
+            return {
+                "ok": True,
+                "changed": bool(res.get("changed")),
+                "removed": list(res.get("removed") or []),
+                "path": str(res.get("path") or ""),
+                "backup": str(res.get("backup") or ""),
+                "provider": st.get("provider") or {},
+                "rebuilt": self.kernel is not None,
+                "kernel_error": self.kernel_error,
+                "kernel_model": (self.kernel.cfg.provider.model if self.kernel else ""),
+                "key_present": bool(cfg_now.provider.api_key),
+                "key_from_env": bool(os.environ.get(env_now, "").strip()),
+                "key_in_secrets_file": self._key_in_secrets_file(env_now),
+            }, ""
+
+    def settings_profile_action(self, body: dict) -> tuple[dict | None, int, str]:
+        """管理已保存的命名 API 方案（save / apply / delete）。"""
+        if not isinstance(body, dict):
+            return None, 400, "请求体不是对象"
+        action = str(body.get("action") or "").strip().lower()
+        if action == "save":
+            try:
+                raw_fields = {}
+                for k in PROVIDER_WRITE_KEYS:
+                    if k in body:
+                        raw_fields["provider." + k] = body[k]
+                clean = parse_provider_updates(raw_fields) if raw_fields else {}
+            except SettingsError as e:
+                return None, 400, str(e)
+            prof = {
+                "id": str(body.get("id") or "").strip(),
+                "name": str(body.get("name") or "").strip(),
+                **clean,
+            }
+            try:
+                res = save_api_profile(prof)
+            except ValueError as e:
+                return None, 400, str(e)
+            except Exception as e:                          # noqa: BLE001
+                return None, 500, f"保存方案失败：{type(e).__name__}: {e}"
+            return res, 200, ""
+        if action == "apply":
+            pid = str(body.get("id") or "").strip()
+            hit = next((p for p in list_api_profiles() if p.get("id") == pid), None)
+            if not hit:
+                return None, 404, f"API 方案不存在：{pid}"
+            updates = {"provider." + k: hit[k] for k in PROVIDER_WRITE_KEYS if k in hit and hit[k] != ""}
+            # 布尔和整数允许 False/0 的显式回写，不能被 != "" 跳过（这里仅防空字符串字段）
+            for bk in ("send_reasoning_effort", "stream_required"):
+                if bk in hit:
+                    updates["provider." + bk] = bool(hit[bk])
+            res, err = self.settings_save(updates)
+            if res is None:
+                return None, 400, err
+            res["applied_profile"] = hit
+            res["profiles"] = list_api_profiles()
+            return res, 200, ""
+        if action == "delete":
+            pid = str(body.get("id") or "").strip()
+            try:
+                res = delete_api_profile(pid)
+            except ValueError as e:
+                return None, 400, str(e)
+            except Exception as e:                          # noqa: BLE001
+                return None, 500, f"删除方案失败：{type(e).__name__}: {e}"
+            if not res.get("ok"):
+                return None, 404, str(res.get("error") or "API 方案不存在")
+            return res, 200, ""
+        return None, 400, f"未知操作：{action!r}（仅支持 save / apply / delete）"
+
     def secret_save(self, body: dict) -> tuple[dict | None, str]:
         """W19-A：把接口密钥存到本机、重建 agent、**并真发一次最小请求验证它**。
 
@@ -2384,9 +2804,10 @@ class Manager:
                             "verify_error": "配置仍不完整：" + cfg.provider.diagnose()})
                 return out, ""
             llm = LLM(cfg.provider)
-            r = llm.chat([{"role": "user", "content": "只回答两个字：可用"}], tools=None)
+            msg, _usage, _reason = llm.chat(
+                [{"role": "user", "content": "只回答两个字：可用"}], tools=None)
             out["verified"] = True
-            out["verify_sample"] = str(getattr(r, "content", r) or "")[:40]
+            out["verify_sample"] = str((msg or {}).get("content") or "")[:40]
         except Exception as e:                          # noqa: BLE001
             out["verified"] = False
             out["verify_error"] = f"{type(e).__name__}: {e}"
@@ -2638,6 +3059,109 @@ class Manager:
         with self._artifact_lock:
             self._artifact_cache.pop(str((ws_dir() / rid).resolve()), None)
         return result
+
+    def save_draft(self, rid: str, text: str | None = None, rel: str = "",
+                   normalize: bool = False) -> dict:
+        """保存微调后的正文或跑一次确定性体例规范化，重算写作体检并同步 session.json。"""
+        why = self.busy()
+        if why:
+            return {"ok": False, "status": 409, "error": "任务正在运行，结束后再保存稿件。"}
+        if not rid or "/" in rid or "\\" in rid or ".." in rid:
+            return {"ok": False, "status": 400, "error": "非法任务 id"}
+        ws = ws_dir() / rid
+        if not ws.is_dir():
+            return {"ok": False, "status": 404, "error": "找不到该任务的工作区"}
+
+        target_file: Path | None = None
+        target_rel = str(rel or "").strip()
+        if target_rel:
+            target_file = self.artifact_path(rid, target_rel)
+            if target_file is None:
+                return {"ok": False, "status": 404, "error": "指定文件不在该任务的工作区内"}
+        else:
+            # 找工作区里主正文 .md（排除大纲/说明/稿件台）
+            arts = self.artifacts(rid)
+            md_cands = [
+                f for f in (arts.get("files") or [])
+                if str(f.get("ext") or "").lower() in ("md", "markdown", "txt")
+                and not re.search(r"outline|大纲|提纲|说明|计划|稿件台|论文台|fix",
+                                  str(f.get("name") or ""), re.I)
+            ]
+            if md_cands:
+                pick = max(md_cands, key=lambda x: int(x.get("size") or 0))
+                target_rel = str(pick["path"])
+                target_file = self.artifact_path(rid, target_rel)
+
+        run_obj = self.get(rid)
+        if text is None:
+            if target_file is not None and target_file.is_file():
+                body = target_file.read_text(encoding="utf-8", errors="replace")
+            elif run_obj and isinstance(run_obj.result, dict) and run_obj.result.get("draft"):
+                body = str(run_obj.result.get("draft") or "")
+            else:
+                return {"ok": False, "status": 404, "error": "该任务没有可微调的正文"}
+        else:
+            body = str(text)
+
+        orig_body = body
+        changes: list[str] = []
+        fmt_check: dict = {}
+        try:
+            from ..caps_ext import manuscript_desk as MD
+            if normalize:
+                body, changes = MD.normalize(body)
+            fmt_check = MD.check(body)
+        except Exception:
+            pass
+
+        if target_file is None:
+            target_rel = "draft.md"
+            target_file = (ws / target_rel).resolve()
+            if ws.resolve() not in target_file.parents:
+                return {"ok": False, "status": 400, "error": "非法路径"}
+
+        tmp = target_file.with_name("." + target_file.name + ".tmp")
+        tmp.write_text(body, encoding="utf-8", newline="\n")
+        os.replace(tmp, target_file)
+        back = target_file.read_text(encoding="utf-8", errors="replace")
+        verified = (back == body)
+
+        with self._artifact_lock:
+            self._artifact_cache.pop(str(ws.resolve()), None)
+
+        lint_dict: dict | None = None
+        try:
+            from ..writing import lint as _w_lint
+            lint_dict = _w_lint(body).to_dict()
+        except Exception:
+            pass
+
+        # 同步内存与盘上的 session.json，确保刷新/回放读到同一份微调结果
+        snap_path = ws / "session.json"
+        if snap_path.is_file():
+            try:
+                snap = json.loads(snap_path.read_text(encoding="utf-8"))
+                if isinstance(snap.get("result"), dict):
+                    snap["result"]["draft"] = body
+                    if lint_dict is not None:
+                        snap["result"]["lint"] = lint_dict
+                    stmp = snap_path.with_name(".session.json.tmp")
+                    stmp.write_text(json.dumps(snap, ensure_ascii=False, indent=2),
+                                    encoding="utf-8", newline="\n")
+                    os.replace(stmp, snap_path)
+            except Exception:
+                pass
+        if rid in self.runs and isinstance(self.runs[rid].result, dict):
+            self.runs[rid].result["draft"] = body
+            if lint_dict is not None:
+                self.runs[rid].result["lint"] = lint_dict
+
+        return {
+            "ok": True, "status": 200, "verified": verified,
+            "changed": body != orig_body, "changes": changes,
+            "path": target_rel, "draft": body, "chars": len(body),
+            "lint": lint_dict, "format_check": fmt_check,
+        }
 
     def artifact_path(self, rid: str, rel: str) -> Path | None:
         """把 (任务 id, 相对路径) 解成一个**确定在工作区内**的真实文件。
@@ -3167,8 +3691,9 @@ class Handler(BaseHTTPRequestHandler):
         if p.startswith("/static/"):
             # 只发明确列出的同源静态资产，绝不把本路由变成磁盘浏览器。
             assets = {"tokens.css", "workspace.css", "reader.css", "layout.css",
-                      "library.css", "mentor.css",
-                      "core.js", "workspace.js", "library.js", "mentor.js", "reader.js"}
+                      "library.css", "mentor.css", "lab.css",
+                      "core.js", "workspace.js", "library.js", "mentor.js", "reader.js",
+                      "lab.js"}
             name = p[len("/static/"):]
             if name not in assets:
                 return self._json(404, {"error": "静态资源不存在"})
@@ -3208,6 +3733,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, self.mgr.license_state())
         if p == "/api/tools":
             return self._json(200, {"tools": self.mgr.tools()})
+        if p == "/api/wiring":
+            # 接线全景（只读）。缺件如实回报，不拿「空表」冒充「没问题」。
+            try:
+                from ..wiring import (DEFAULT_LOOP_PY,
+                                      inspect as _inspect_wiring)
+                k = getattr(self.mgr, "kernel", None)
+                if k is None:
+                    return self._json(200, {"ok": False,
+                                            "error": "内核未初始化（kernel=None）"})
+                return self._json(200, _inspect_wiring(
+                    k.registry, hook_policy_source=DEFAULT_LOOP_PY))
+            except Exception as e:                          # noqa: BLE001
+                return self._json(200, {"ok": False,
+                                        "error": f"{type(e).__name__}: {e}"})
         if p == "/api/presets":
             # 只读挂载健康清单。判健康**只认 MountReport.broken**：
             # 不查文件在不在、不查 JSON 能不能解析，坏件照样带着理由返回。
@@ -3343,11 +3882,86 @@ class Handler(BaseHTTPRequestHandler):
             ids = t.get("library", [])
             return self._json(200, {"ok": True, "slug": slug, "items": [docs[x] for x in ids if x in docs],
                                     "missing_ids": [x for x in ids if x not in docs], "total": len(ids)})
+        if p == "/api/advisor":
+            from .. import advisor as advisor_store
+            slug = (qs.get("slug", [""])[0] or "").strip()
+            if not slug:
+                return self._json(200, {"ok": True, "advisors": advisor_store.list_all(),
+                                        "modes": advisor_store.MODES,
+                                        "strategies": advisor_store.STRATEGIES,
+                                        "root": str(advisor_store.advisors_root())})
+            adv = advisor_store.load(slug)
+            if adv is None:
+                return self._json(404, {"ok": False,
+                                        "error": f"找不到导师模型：{slug}",
+                                        "known": [r["slug"] for r in advisor_store.list_all()]})
+            return self._json(200, {"ok": True, "slug": adv.slug, "name": adv.name,
+                                    "version": adv.version,
+                                    "mode": adv.mode, "strategy": adv.strategy,
+                                    "sufficiency": adv.sufficiency,
+                                    "audit": advisor_store.audit(adv),
+                                    "versions": advisor_store.versions(slug),
+                                    "layers": {k: len(v) for k, v in adv.layers.items()},
+                                    "layer_texts": dict(adv.layers)})
+        if p == "/api/topic/outline":
+            from .. import outline as outline_store, topic as topic_store
+            slug = (qs.get("slug", [""])[0] or "").strip() or topic_store.current()
+            if not slug:
+                return self._json(200, {"ok": True, "exists": False, "slug": ""})
+            if not topic_store.valid_slug(slug) or topic_store.read_topic(slug) is None:
+                return self._json(404, {"ok": False, "error": f"课题不存在：{slug}"})
+            ol = outline_store.load(slug)
+            rep = outline_store.reconcile(slug)
+            md_txt = outline_store.render_md(slug, ol) if ol is not None else ""
+            return self._json(200, {"ok": True, "slug": slug, "exists": ol is not None,
+                                    "outline": ol, "reconcile": rep, "md": md_txt,
+                                    "why_missing": "" if ol is not None else outline_store.diagnose(slug)})
+        if p == "/api/topic/ecosystem":
+            return self._get_topic_ecosystem(qs)
+        if p == "/api/methods":
+            return self._get_methods(qs)
         if p == "/api/topic":
             # 导师模式的课题面板（§3.5 最小接线）：读的是内核那份 `topics/` 台账，
             # 服务端**不缓存、不另算** —— 「当前课题」有两处真相就必然漂一处。
             body = self.mgr.topic_tool("topic_status", slug=(qs.get("slug", [""])[0] or ""))
             return self._json(200 if body.get("ok") else 404, body)
+        if p in ("/api/lab", "/api/lab/report"):
+            # 实验台：规划 / 成果 / 分析三个视图**全部现算自 `topics/<slug>/LAB.jsonl`**，
+            # 服务端不另存一份、不另写一套折叠 —— 与内核 `lab_record`/`lab_report`
+            # 共用 `rongke/lab.py` 这一处真相。GET 一律只读（report 也只渲染不落盘，
+            # 落盘 LAB.md/LAB.csv 是内核工具的活，避免网页预览悄悄改课题目录）。
+            from .. import lab as lab_store, topic as topic_store
+            slug = (qs.get("slug", [""])[0] or "").strip()
+            topics = [{"slug": t["slug"], "title": t.get("title", "")}
+                      for t in topic_store.list_topics()]
+            current = topic_store.current()
+            if not slug:
+                slug = current
+            if not slug:
+                # 一个课题都没有：如实回空清单，让界面去引导建课题，而不是 404 装坏。
+                return self._json(200, {"ok": True, "slug": "", "current": "",
+                                        "topics": topics, "projects": [], "no_topic": True})
+            try:
+                lab_store.lab_path(slug)        # 课题不存在 / slug 非法 ⇒ 抛错
+            except ValueError as e:
+                return self._json(404, {"ok": False, "error": str(e)})
+            try:
+                if p == "/api/lab/report":
+                    return self._json(200, {"ok": True, "slug": slug,
+                                            "md": lab_store.render_md(slug),
+                                            "csv": lab_store.render_csv(slug)})
+                mx = lab_store.matrix(slug)
+                return self._json(200, {
+                    "ok": True, "slug": slug, "current": current, "topics": topics,
+                    "state": lab_store.state(slug), "matrix": mx,
+                    "gaps": lab_store.gaps(slug),
+                    "actions": lab_store.next_actions(slug, limit=8),
+                    "digest": lab_store.digest(slug),
+                    "timeline": lab_store.timeline(slug), "metrics": mx["metrics"],
+                    "progress": lab_store.project_progress(slug),
+                    "projects": lab_store.all_projects_progress()})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"实验台账读不动：{e}"})
         if p == "/api/run":
             rid = qs.get("id", [""])[0]
             run = self.mgr.get(rid)
@@ -3712,6 +4326,11 @@ class Handler(BaseHTTPRequestHandler):
         """
         size = f.stat().st_size
         ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+        # Windows 的注册表把 .svg 映成 **image/svg**（非标准别名），浏览器 <img>
+        # 不认它 ⇒ 缩略图整块空白。标准 MIME 只有 image/svg+xml，这里钉死，
+        # 与 /api/analysis/fig 分支同一口径。
+        if f.suffix.lower() == ".svg":
+            ctype = "image/svg+xml"
         if ctype.startswith("text/") or ctype in ("application/json", "application/xml"):
             ctype += "; charset=utf-8"
         self.send_response(200)
@@ -4061,6 +4680,13 @@ class Handler(BaseHTTPRequestHandler):
                 "note": res.get("note", ""),
             })
 
+        if u.path == "/api/run/drop":
+            rid = str(read_json_object(self).get("id") or "").strip()
+            res, code, err = self.mgr.drop_run(rid)
+            if res is None:
+                return self._json(code, {"ok": False, "error": err})
+            return self._json(200, res)
+
         if u.path == "/api/settings":
             # ★ 全站**唯一**会改配置文件的写接口。
             # 409 的判据与上传/材料区同源：`Manager.busy()`。
@@ -4079,6 +4705,30 @@ class Handler(BaseHTTPRequestHandler):
                 # 文案原样端给界面显示，不许在前端改写成一句好听的话。
                 return self._json(400, {"error": err})
             return self._json(200, res)
+
+        if u.path == "/api/settings/reset":
+            why = self.mgr.busy()
+            if why:
+                return self._json(409, {
+                    "error": "任务在跑，重置配置要等它结束 —— 重置会重建 agent，"
+                             "跑到一半重建没有意义。等右上角的任务结束再点。"})
+            res, err = self.mgr.settings_reset()
+            if res is None:
+                return self._json(400, {"error": err})
+            return self._json(200, res)
+
+        if u.path == "/api/settings/profiles":
+            body = read_json_object(self)
+            action = str(body.get("action") or "").strip().lower()
+            if action == "apply":
+                why = self.mgr.busy()
+                if why:
+                    return self._json(409, {
+                        "error": "任务在跑，切换方案要等它结束 —— 切换会重建 agent。"})
+            res, code, err = self.mgr.settings_profile_action(body)
+            if res is None:
+                return self._json(code, {"error": err})
+            return self._json(code, res)
 
         if u.path == "/api/secret":
             # W19-A：存接口密钥到 ~/.rongke/secrets.json 并当场验证。
@@ -4191,7 +4841,8 @@ class Handler(BaseHTTPRequestHandler):
                                           str(body.get("text") or ""),
                                           mentor=kb_only_from(body),
                                           mode=mode_from(body),
-                                          preset=str(body.get("preset") or "").strip())
+                                          preset=str(body.get("preset") or "").strip(),
+                                          advisor=str(body.get("advisor") or "").strip())
             if run is None:
                 # 追问同样是"发起新任务"：过期时回 403 + license 标记，
                 # 前端据此弹激活层，而不是显示一条跑失败的历史。
@@ -4219,7 +4870,7 @@ class Handler(BaseHTTPRequestHandler):
             slug = str(body.get("slug") or "").strip()
             # 兼容旧客户端：只带 slug 的 POST 表示切换；显式 status 仍为只读。
             action = str(body.get("action") or ("use" if slug else "status")).strip()
-            if action == "use":
+            if action in ("use", "create"):
                 if not slug:
                     return self._json(400, {"error": "课题名是空的 —— 先起个名字再立课题"})
                 if len(str(body.get("title") or "")) > 160 or len(str(body.get("question") or "")) > 1200:
@@ -4227,10 +4878,32 @@ class Handler(BaseHTTPRequestHandler):
                 why = self.mgr.busy()
                 if why:
                     return self._json(409, {"error": "任务正在运行，结束后再切换课题。"})
-                return self._json(200, self.mgr.topic_tool(
-                    "topic_use", slug=slug,
-                    title=str(body.get("title") or "").strip(),
-                    question=str(body.get("question") or "").strip()))
+                title_val = str(body.get("title") or "").strip()
+                question_val = str(body.get("question") or "").strip()
+                if self.mgr.registry_fn("topic_use") is not None:
+                    return self._json(200, self.mgr.topic_tool(
+                        "topic_use", slug=slug, title=title_val, question=question_val))
+                from .. import topic as topic_store
+                if not topic_store.valid_slug(slug):
+                    return self._json(400, {"ok": False, "error": f"非法的课题名: {slug!r}（只收字母/数字/下划线/短横/点/中文，≤48 字）"})
+                existed = topic_store.read_topic(slug) is not None
+                m = topic_store.ensure_topic(slug, title=title_val, question=question_val)
+                topic_store.set_current(slug)
+                return self._json(200, {
+                    "ok": True, "slug": slug, "created": not existed,
+                    "title": m.get("title"), "question": m.get("question"),
+                    "current": topic_store.current(),
+                })
+            if action == "delete":
+                why = self.mgr.busy()
+                if why:
+                    return self._json(409, {"ok": False, "error": "任务正在运行，结束后再删除课题。"})
+                from .. import topic as topic_store
+                res = topic_store.delete_topic(slug, confirm=bool(body.get("confirm", False)))
+                if not res.get("ok"):
+                    code = 404 if "不存在" in str(res.get("error") or "") else 400
+                    return self._json(code, res)
+                return self._json(200, res)
             if action in ("update", "link", "unlink"):
                 why = self.mgr.busy()
                 if why:
@@ -4306,11 +4979,129 @@ class Handler(BaseHTTPRequestHandler):
                                         "doc": r.get("doc") or dname,
                                         "chars": r.get("chars") or 0,
                                         "verified": bool(r.get("verified"))})
+            if action in ("raise_blocker", "resolve_blocker"):
+                why = self.mgr.busy()
+                if why:
+                    return self._json(409, {"ok": False, "error": "任务正在运行，结束后再记卡点。"})
+                from .. import topic as topic_store
+                if not topic_store.valid_slug(slug) or topic_store.read_topic(slug) is None:
+                    return self._json(404, {"ok": False, "error": f"课题不存在：{slug}"})
+                try:
+                    if action == "raise_blocker":
+                        tried = body.get("tried")
+                        res = topic_store.add_blocker(
+                            slug,
+                            what=str(body.get("what") or ""),
+                            tried=tried if isinstance(tried, list) else None,
+                            where=str(body.get("where") or ""),
+                        )
+                    else:
+                        res = topic_store.resolve_blocker(
+                            slug,
+                            str(body.get("id") or ""),
+                            how=str(body.get("how") or "已在控制台闭环"),
+                        )
+                    return self._json(200, res)
+                except ValueError as e:
+                    return self._json(400, {"ok": False, "error": str(e)})
             if action in ("status", "status_all"):
                 # status = 当前课题的台账；status_all = 全部课题（切课题要用这份清单）。
                 # 两份都由 `topic_status` 一个工具给出，不在这儿拼第二套真相。
                 return self._json(200, self.mgr.topic_tool("topic_status", slug=slug))
             return self._json(400, {"error": f"未知的 action：{action}"})
+
+        if u.path == "/api/advisor":
+            return self._post_advisor()
+
+        if u.path == "/api/methods":
+            return self._post_methods()
+
+        if u.path == "/api/lab/plate":
+            return self._post_lab_plate()
+
+        if u.path == "/api/topic/outline":
+            return self._post_topic_outline()
+
+        if u.path == "/api/draft/save":
+            body = read_json_object(self)
+            res = self.mgr.save_draft(
+                str(body.get("id") or ""),
+                text=str(body["text"]) if "text" in body and body["text"] is not None else None,
+                rel=str(body.get("path") or ""),
+                normalize=bool(body.get("normalize", False)),
+            )
+            return self._json(int(res.pop("status", 200)), res)
+
+        if u.path == "/api/draft/normalize":
+            body = read_json_object(self)
+            res = self.mgr.save_draft(
+                str(body.get("id") or ""),
+                text=None,
+                rel=str(body.get("path") or ""),
+                normalize=True,
+            )
+            return self._json(int(res.pop("status", 200)), res)
+
+        if u.path == "/api/lab/plan":
+            body = read_json_object(self)
+            from .. import lab as lab_store
+            action = str(body.get("action") or "import").strip()
+            if action == "parse":
+                parsed = lab_store.parse_experimental_plan(
+                    str(body.get("raw_text") or ""),
+                    title=str(body.get("title") or ""),
+                    start_date=str(body.get("start_date") or ""),
+                    default_follow_up_days=int(body.get("default_follow_up_days") or 3),
+                )
+                return self._json(200, {"ok": True, "parsed": parsed})
+            slug = str(body.get("slug") or "").strip()
+            if not slug:
+                return self._json(400, {"ok": False, "error": "slug 不能为空；请先选择课题"})
+            why = self.mgr.busy()
+            if why:
+                return self._json(409, {"ok": False, "error": "任务正在运行，结束后再导入实验计划。"})
+            try:
+                res = lab_store.import_plan(
+                    slug,
+                    raw_text=str(body.get("raw_text") or ""),
+                    title=str(body.get("title") or ""),
+                    objective=str(body.get("objective") or ""),
+                    start_date=str(body.get("start_date") or ""),
+                    steps=body.get("steps") if isinstance(body.get("steps"), list) else None,
+                    auto_schedule=bool(body.get("auto_schedule", True)),
+                    default_follow_up_days=int(body.get("default_follow_up_days") or 3),
+                )
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"实验计划写入失败：{e}"})
+            return self._json(200 if res.get("ok") else 500, res)
+
+        if u.path == "/api/lab":
+            # 记一条实验事实 / 作废一条。**唯一写路径就是 `lab.record`** ——
+            # 与内核 `lab_record` 工具同一处校验（value 必须是数字、指标须先注册、
+            # 作废必须写理由……），网页这边不另放宽一条。写完读回的 `verified`
+            # 原样端给界面，不许把"写了"渲染成"核过了"。
+            body = read_json_object(self)
+            slug = str(body.get("slug") or "").strip()
+            kind = str(body.get("kind") or "").strip()
+            if not slug:
+                return self._json(400, {"ok": False, "error": "slug 不能为空；请先选择课题"})
+            if not kind:
+                return self._json(400, {"ok": False, "error": "kind 不能为空"})
+            why = self.mgr.busy()
+            if why:
+                # 与课题写入同一道闸：跑着的时候内核可能正在写同一份 LAB.jsonl。
+                return self._json(409, {"ok": False, "error": "任务正在运行，结束后再记台账。"})
+            from .. import lab as lab_store
+            fields = {k: v for k, v in body.items() if k not in ("slug", "kind")}
+            try:
+                r = lab_store.record(slug, kind, **fields)
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"实验台账写不动：{e}"})
+            return self._json(200 if r.get("ok") else 500, r)
 
         if u.path != "/api/run":
             if u.path == "/api/contract":
@@ -4339,7 +5130,10 @@ class Handler(BaseHTTPRequestHandler):
                                   frozen if isinstance(frozen, dict) else None,
                                   mentor=mentor,
                                   mode=mode_from(body),
-                                  preset=str(body.get("preset") or "").strip())
+                                  preset=str(body.get("preset") or "").strip(),
+                                  recall=recall_from(body),
+                                  unattended=unattended_from(body),
+                                  advisor=str(body.get("advisor") or "").strip())
         if run is None:
             # 授权不足是 403（"你没有权限"），与"忙"的 409 分开 ——
             # 界面据此决定该弹激活框还是提示等一会儿。
@@ -4381,9 +5175,438 @@ class Handler(BaseHTTPRequestHandler):
                 #   把这句话判成了问话。只看 answer 那一半是"开关只朝一个方向通"，
                 #   实测就是这样：切回任务模式后契约里 answer_only 仍是 True。
                 c.answer_only = False
-            return self._json(200, {"contract": c.to_dict()})
+            preset_id = str(body.get("preset") or "").strip()
+            preset_stages: list[str] = []
+            if preset_id:
+                from ..caps import merge_preset_stages
+                from ..preset import resolve_preset
+                rp, _perr = resolve_preset(preset_id)
+                if rp is not None and rp.stages:
+                    preset_stages = list(rp.stages)
+                    merge_preset_stages(c, preset_stages)
+            out: dict = {"contract": c.to_dict()}
+            if preset_id:
+                out["preset"] = preset_id
+                out["preset_stages"] = preset_stages
+            return self._json(200, out)
         except Exception as e:
             return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
+    # ── 课题生态 / 方法台账 / 板内质控 / 大纲 / 导师档案 ───────────
+    _METHOD_FIELDS = (
+        "id", "title", "origin", "differs_from", "what_changed",
+        "params", "steps", "pitfalls", "version", "instrument",
+        "consumable", "yield", "note", "text", "worked", "failed",
+        "disclosed_at", "first_public", "claims_basis", "seq", "reason", "why",
+    )
+
+    def _resolve_topic_for_read(self, qs: dict, topic_store) -> str | None:
+        """从 GET 查询串解析课题 slug（空回落 CURRENT）。'' 表示无当前课题，None 表示已写 404。"""
+        slug = (qs.get("slug") or [""])[0].strip() or topic_store.current()
+        if not slug:
+            return ""
+        if not topic_store.valid_slug(slug) or topic_store.read_topic(slug) is None:
+            self._json(404, {"ok": False, "error": f"课题不存在：{slug}"})
+            return None
+        return slug
+
+    def _resolve_topic_for_write(self, body: dict, topic_store) -> str | None:
+        """从 POST 请求体解析课题 slug（空回落 CURRENT）。不合法或不存在直接写 400/404 并返回 None。"""
+        slug = str(body.get("slug") or "").strip() or topic_store.current()
+        if not slug or not topic_store.valid_slug(slug):
+            self._json(400, {"ok": False, "error": "非法的课题标识（slug 不能为空）"})
+            return None
+        if topic_store.read_topic(slug) is None:
+            self._json(404, {"ok": False, "error": f"课题不存在：{slug}"})
+            return None
+        return slug
+
+    def _get_methods(self, qs: dict) -> None:
+        from .. import methods as methods_store, topic as topic_store
+        slug = self._resolve_topic_for_read(qs, topic_store)
+        if slug is None:
+            return
+        if not slug:
+            return self._json(200, {
+                "ok": True,
+                "no_topic": True,
+                "slug": "",
+                "origins": methods_store.ORIGINS,
+                "verdicts": methods_store.VERDICTS,
+                "methods": [],
+                "md": "",
+            })
+        try:
+            st = methods_store.state(slug)
+            methods_list = []
+            for m in sorted(st["methods"].values(), key=lambda item: item.get("id", "")):
+                entry = dict(m)
+                entry["patent_view"] = methods_store.patent_view(slug, m["id"])
+                methods_list.append(entry)
+            return self._json(200, {
+                "ok": True,
+                "slug": slug,
+                "current": topic_store.current(),
+                "no_topic": False,
+                "origins": methods_store.ORIGINS,
+                "verdicts": methods_store.VERDICTS,
+                "methods": methods_list,
+                "n_retracted": st.get("n_retracted", 0),
+                "md": methods_store.render_md(slug),
+            })
+        except OSError as e:
+            return self._json(500, {"ok": False, "error": f"方法台账读不动：{e}"})
+
+    def _post_methods(self) -> None:
+        why = self.mgr.busy()
+        if why:
+            self.close_connection = True
+            return self._json(409, {"ok": False, "error": "任务正在运行，结束后再记录方法。"})
+        body = read_json_object(self)
+        from .. import methods as methods_store, topic as topic_store
+        slug = self._resolve_topic_for_write(body, topic_store)
+        if slug is None:
+            return
+        kind = str(body.get("kind") or "").strip().lower()
+        fields = {k: body[k] for k in self._METHOD_FIELDS if k in body}
+        if kind == "retract":
+            if not str(fields.get("why") or "").strip() and fields.get("reason"):
+                fields["why"] = fields.pop("reason")
+            if isinstance(fields.get("seq"), str) and fields["seq"].strip():
+                try:
+                    fields["seq"] = int(fields["seq"].strip())
+                except ValueError:
+                    pass
+        if kind == "version":
+            if isinstance(fields.get("version"), bool):
+                return self._json(400, {"ok": False, "error": "version 必须是 ≥1 的整数"})
+            if isinstance(fields.get("version"), str) and fields["version"].strip():
+                try:
+                    fields["version"] = int(fields["version"].strip())
+                except ValueError:
+                    pass
+        if isinstance(fields.get("differs_from"), str):
+            fields["differs_from"] = [x.strip() for x in re.split(r"[,，\n]+", fields["differs_from"]) if x.strip()]
+        if isinstance(fields.get("claims_basis"), str):
+            fields["claims_basis"] = [x.strip() for x in fields["claims_basis"].splitlines() if x.strip()]
+        try:
+            rec = methods_store.record(slug, kind, **fields)
+            md_res = methods_store.write_md(slug)
+        except (ValueError, KeyError) as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        except OSError as e:
+            return self._json(500, {"ok": False, "error": f"方法台账写不动：{e}"})
+        return self._json(200, {
+            "ok": bool(rec.get("ok")),
+            "verified": bool(rec.get("verified")),
+            "event": rec,
+            "md_sync": md_res,
+        })
+
+    def _post_lab_plate(self) -> None:
+        body = read_json_object(self)
+        from .. import lab as lab_store, plate as plate_store, topic as topic_store
+        try:
+            wells = _parse_plate_wells(body.get("wells"))
+            high = _parse_well_list(body.get("high") or "A1-A4")
+            low = _parse_well_list(body.get("low") or "H1-H4")
+            min_controls = max(2, int(body.get("min_controls") or 4))
+        except (TypeError, ValueError) as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        if not wells:
+            return self._json(400, {"ok": False, "error": "请提供孔板读数（支持 A1=1.23 键值对或 8×12 表格粘贴）"})
+        try:
+            rep = plate_store.run_wells(wells, {"high": high, "low": low}, min_controls=min_controls)
+            sum_txt = plate_store.summary(str(body.get("slug") or "plate"), rep)
+        except ValueError as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        lab_ev = None
+        if body.get("record_to_lab"):
+            why = self.mgr.busy()
+            if why:
+                return self._json(409, {"ok": False, "error": "任务正在运行，结束后再记台账。"})
+            slug = self._resolve_topic_for_write(body, topic_store)
+            if slug is None:
+                return
+            strain_val = str(body.get("strain") or "").strip() or None
+            batch_val = str(body.get("batch") or "").strip() or None
+            code_val = str(body.get("code") or strain_val or batch_val or "PLATE").strip() or "PLATE"
+            try:
+                lab_ev = lab_store.record(
+                    slug, "observe",
+                    code=code_val,
+                    text="[板内质控] " + sum_txt.replace("\n", " ；")[:420],
+                    batch=batch_val,
+                    strain=strain_val,
+                )
+            except (ValueError, KeyError) as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"实验台账写不动：{e}"})
+        return self._json(200, {
+            "ok": True,
+            "report": rep,
+            "summary": sum_txt,
+            "wells_parsed": len(wells),
+            "high": high,
+            "low": low,
+            "lab_event": lab_ev,
+        })
+
+    def _post_topic_outline(self) -> None:
+        why = self.mgr.busy()
+        if why:
+            self.close_connection = True
+            return self._json(409, {"ok": False, "error": "任务正在运行，结束后再修改开题大纲。"})
+        body = read_json_object(self)
+        from .. import lab as lab_store, outline as outline_store, topic as topic_store
+        slug = self._resolve_topic_for_write(body, topic_store)
+        if slug is None:
+            return
+        action = str(body.get("action") or "save").strip().lower()
+        if action == "save":
+            try:
+                res = outline_store.save(
+                    slug,
+                    title=str(body.get("title") or ""),
+                    question=str(body.get("question") or ""),
+                    thesis=str(body.get("thesis") or ""),
+                    sections=body.get("sections") or [],
+                    experiments=body.get("experiments") or [],
+                )
+            except (ValueError, KeyError) as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"开题大纲写入失败：{e}"})
+            ol = outline_store.load(slug)
+            rep = outline_store.reconcile(slug)
+            md_txt = outline_store.render_md(slug, ol) if ol else ""
+            return self._json(200, {
+                "ok": True,
+                "verified": bool(res.get("verified")),
+                "save": res,
+                "outline": ol,
+                "reconcile": rep,
+                "md": md_txt,
+            })
+        if action == "plan_to_lab":
+            try:
+                res = outline_store.plan_to_lab(slug, only_missing=bool(body.get("only_missing", True)))
+                exp_synced = 0
+                if body.get("sync_experiments", True):
+                    ol = outline_store.load(slug)
+                    lab_st = lab_store.state(slug)
+                    existing_exps = dict(lab_st.get("experiments", {}))
+                    for x in (ol or {}).get("experiments", []):
+                        xid = x.get("id")
+                        if xid and xid not in existing_exps:
+                            days_val = x.get("days")
+                            expect_days = (days_val if isinstance(days_val, int)
+                                           and not isinstance(days_val, bool) else None)
+                            lab_store.record(
+                                slug, "experiment",
+                                id=xid,
+                                title=x.get("title") or xid,
+                                method=x.get("method") or "",
+                                controls=x.get("controls") or "",
+                                n=x.get("n") or "",
+                                expect_days=expect_days,
+                                depends_on=x.get("depends_on") or [],
+                                note=x.get("note") or "",
+                            )
+                            exp_synced += 1
+                            existing_exps[xid] = True
+                return self._json(200, {
+                    **res,
+                    "experiments_synced": exp_synced,
+                    "reconcile": outline_store.reconcile(slug),
+                })
+            except (ValueError, KeyError, RuntimeError) as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"大纲同步实验台失败：{e}"})
+        return self._json(400, {"ok": False, "error": f"未知的 action：{action}"})
+
+    def _get_topic_ecosystem(self, qs: dict) -> None:
+        from .. import (
+            advisor as advisor_store,
+            lab as lab_store,
+            methods as methods_store,
+            outline as outline_store,
+            topic as topic_store,
+        )
+        slug = self._resolve_topic_for_read(qs, topic_store)
+        if slug is None:
+            return
+        if not slug:
+            return self._json(200, {"ok": True, "no_topic": True, "slug": "", "next_steps": []})
+        try:
+            t_view = topic_store.status_view(slug)
+            ol = outline_store.load(slug)
+            ol_rep = outline_store.reconcile(slug)
+            lab_prog = lab_store.project_progress(slug)
+            lab_st = lab_store.state(slug)
+            m_st = methods_store.state(slug)
+            p_views = [methods_store.patent_view(slug, mid) for mid in sorted(m_st["methods"])]
+            adv_list = advisor_store.list_all()
+        except OSError as e:
+            return self._json(500, {"ok": False, "error": f"课题生态状态读取失败：{e}"})
+
+        lab_counts = lab_prog.get("counts") or {}
+        n_overdue = int(lab_counts.get("overdue_total") or 0)
+        n_today = len((lab_prog.get("schedule") or {}).get("today") or [])
+        open_blockers = int(t_view.get("open_total") or 0)
+
+        next_steps: list[dict[str, str]] = []
+        if ol is None:
+            next_steps.append({
+                "kind": "outline",
+                "priority": "high",
+                "text": "尚未建立结构化开题大纲，建议新建大纲并绑定章节数据需求与供数实验",
+                "action": "edit_outline",
+            })
+        elif ol_rep.get("starved"):
+            next_steps.append({
+                "kind": "outline",
+                "priority": "high",
+                "text": f"开题大纲有 {len(ol_rep['starved'])} 项数据需求缺少实验供应，建议一键推入实验台待办",
+                "action": "plan_to_lab",
+            })
+        if n_overdue > 0 or n_today > 0:
+            next_steps.append({
+                "kind": "lab",
+                "priority": "high" if n_overdue > 0 else "medium",
+                "text": f"实验台有 {n_overdue} 项已逾期、{n_today} 项今日到期跟进，建议前往实验台处理",
+                "action": "open_lab",
+            })
+        if any(pv.get("verdict") == "check_first" for pv in p_views):
+            next_steps.append({
+                "kind": "methods",
+                "priority": "medium",
+                "text": "部分实验方法已有自研参数但专利线索存在缺口（如 first_public/定量范围），建议补齐",
+                "action": "open_methods",
+            })
+        if open_blockers > 0:
+            next_steps.append({
+                "kind": "blocker",
+                "priority": "high",
+                "text": f"当前有 {open_blockers} 条未闭环研究卡点，建议优先排查并闭环",
+                "action": "open_blockers",
+            })
+        if not (t_view.get("docs") or {}).get("plan"):
+            next_steps.append({
+                "kind": "doc",
+                "priority": "low",
+                "text": "尚未创建研究计划（PLAN.md），建议编写并核验落盘",
+                "action": "open_plan",
+            })
+
+        return self._json(200, {
+            "ok": True,
+            "slug": slug,
+            "no_topic": False,
+            "topic": {
+                "slug": slug,
+                "title": t_view.get("title") or slug,
+                "question": t_view.get("question") or "",
+                "stage": t_view.get("stage") or "ideate",
+                "next_step": t_view.get("next_step") or "",
+                "docs": t_view.get("docs") or {},
+                "doc_index": t_view.get("doc_index") or [],
+                "library_count": len(t_view.get("library") or []),
+                "open_blockers": open_blockers,
+                "blockers_total": int(t_view.get("blockers_total") or 0),
+            },
+            "outline": {
+                "exists": ol is not None,
+                "title": (ol or {}).get("title", ""),
+                "sections": len((ol or {}).get("sections") or []),
+                "experiments": len((ol or {}).get("experiments") or []),
+                "ok": bool(ol_rep.get("ok")) if ol is not None else False,
+                "starved_count": len(ol_rep.get("starved") or []),
+                "starved": ol_rep.get("starved") or [],
+                "orphan_experiments": ol_rep.get("orphan_experiments") or [],
+                "unverified": ol_rep.get("unverified") or [],
+                "reconcile": ol_rep,
+            },
+            "lab": {
+                "overall_progress_pct": lab_prog.get("overall_progress_pct", 0),
+                "counts": lab_counts,
+                "overdue": n_overdue,
+                "today": n_today,
+                "strains": len(lab_st.get("strains") or {}),
+                "batches": len(lab_st.get("batches") or {}),
+                "measures": len(lab_st.get("measures") or []),
+                "observes": len(lab_st.get("observes") or []),
+                "n_events": int(lab_st.get("n_events") or 0),
+            },
+            "methods": {
+                "count": len(m_st.get("methods") or {}),
+                "n_retracted": int(m_st.get("n_retracted") or 0),
+                "ids": sorted((m_st.get("methods") or {}).keys()),
+                "patent_views": p_views,
+                "worth_asking": sum(1 for pv in p_views if pv.get("verdict") == "worth_asking"),
+                "check_first": sum(1 for pv in p_views if pv.get("verdict") == "check_first"),
+                "published": sum(1 for pv in p_views if pv.get("verdict") == "published"),
+            },
+            "advisor": {
+                "count": len(adv_list),
+                "advisors": adv_list,
+            },
+            "next_steps": next_steps,
+        })
+
+    def _post_advisor(self) -> None:
+        why = self.mgr.busy()
+        if why:
+            self.close_connection = True
+            return self._json(409, {"ok": False, "error": "任务正在运行，结束后再保存导师档案。"})
+        body = read_json_object(self)
+        from .. import advisor as advisor_store
+        slug = str(body.get("slug") or "").strip()
+        name = str(body.get("name") or "").strip()
+        if not slug and name:
+            slug = advisor_store.slugify(name)
+        if not slug or not advisor_store.valid_slug(slug):
+            return self._json(400, {"ok": False, "error": "请填写合法的导师标识（小写字母/数字/短横）或导师姓名"})
+        action = str(body.get("action") or "").strip().lower()
+        if action == "rollback":
+            res = advisor_store.rollback(slug, str(body.get("version") or ""))
+            return self._json(200 if res.get("ok") else 400, res)
+        if action == "delete":
+            res = advisor_store.delete(slug, confirm=bool(body.get("confirm", False)))
+            code = 200 if res.get("ok") else (404 if "不存在" in str(res.get("error") or "") else 400)
+            return self._json(code, res)
+        layers = body.get("layers")
+        if layers is not None and not isinstance(layers, dict):
+            return self._json(400, {"ok": False, "error": "layers 必须是对象"})
+        clean_layers: dict[str, str] = {}
+        for k, val in (layers or {}).items():
+            if isinstance(val, str):
+                s = val.strip()
+                if s and s != advisor_store.NO_MATERIAL and "source=" not in s:
+                    clean_layers[k] = val.rstrip() + "\n<!-- source=user -->"
+                else:
+                    clean_layers[k] = val
+            elif val is not None:
+                clean_layers[k] = str(val)
+        raw_suf = body.get("sufficiency")
+        try:
+            suf = int(raw_suf) if raw_suf not in (None, "") else 60
+        except (TypeError, ValueError):
+            return self._json(400, {"ok": False, "error": "sufficiency 必须是 0–100 的整数"})
+        try:
+            res = advisor_store.save(
+                slug,
+                layers=clean_layers,
+                name=name or slug,
+                mode=str(body.get("mode") or ""),
+                strategy=str(body.get("strategy") or "hybrid_distill"),
+                sufficiency=suf,
+            )
+        except (ValueError, KeyError) as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        return self._json(200 if res.get("ok") else 400, res)
 
 
 class Server(ThreadingHTTPServer):

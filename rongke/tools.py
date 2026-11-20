@@ -40,9 +40,20 @@ _RE_URL = re.compile(r"https?://[^\s\"'<>()\[\]]+")
 # 数字锚点**必须收**：整数恰恰是结论里最常被引用的量（"350 份样本"、"12 篇"），
 # 漏掉它，下游"正文里的数值必须能追到证据"这条判据会大面积假阴性 ——
 # 而假阴性会让人把整条检查关掉，那比不查更糟。
-# 守卫：前后不许贴字母（挡住 ophiocordyceps2、v1.2 这类标识符里的数字），
-# 支持千分位与科学计数法。
-_RE_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)(?![\w])")
+# 守卫：前后不许贴 **ASCII** 字母/数字/下划线（挡住 ophiocordyceps2、v1.2 这类
+# 标识符里的数字），支持千分位与科学计数法。
+# ★ 2026-11-07 修 num-na-glued：守卫原为 `(?<![\w.])` / `(?![\w])`，而汉字算
+#   `\w` ⇒ "温度为47.3%、样本1280株" 一个锚点都抽不到，numeric_anchor 在真实
+#   中文稿上大面积虚判。收窄成 ASCII 类后汉字紧贴可收。三个已知取舍：
+#   ① 紧贴 ASCII 单位的数（"99.9h"）仍不收 —— 单位与标识符无法字符串级区分，
+#      要收得先有单位白名单，那是另一条判据的事；
+#   ② 紧贴希腊/西里尔字母的数会被收（这类标识符极少，且多为单位数被 len≥2 滤掉）；
+#   ③ 尾部两个负环视是**防截断**的：放开汉字后 "99.9h" 会回溯成假锚点 "99"
+#      （实测自检当场抓到）。匹配后若跟着 ".数字" 或 ",三位数字"（千分位续段），
+#      说明短匹配是长数的截断 ⇒ 拒收。CSV "12,47.3" 不受影响（,47 不是 ,\d{3}）。
+_RE_NUM = re.compile(
+    r"(?<![0-9A-Za-z_.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+    r"(?![0-9A-Za-z_])(?!\.\d)(?!,\d{3})")
 # 句末标点会粘在 DOI / URL 上（中文的「。」「，」尤其容易）——
 # 带一个错标点的锚点**必然匹配不上**，于是看起来像"证据不足"，实则是采集器的错。
 _TRAIL = ".,;:!?、)]}>,。；：！？）】」』…"
@@ -133,6 +144,7 @@ class Tool:
     domain: str = "core"
     mutating: bool = False                # 是否改动外部世界（写盘 / 联网提交）
     source: str = "builtin"               # 工具来源：builtin / workbench / plugin
+    priority: int = 50                    # 预算裁剪优先级（越小越先保留，不进 OpenAI schema）
 
     def openai_schema(self) -> dict:
         return {
@@ -240,6 +252,18 @@ class ToolRegistry:
             return False
         del self._tools[name]
         return True
+
+    def retain(self, names) -> list[str]:
+        """只保留名单内的工具，移除其余工具并返回被移除的有序名称列表。"""
+        keep = set(names or ())
+        removed = sorted(n for n in self._tools if n not in keep)
+        for n in removed:
+            del self._tools[n]
+        return removed
+
+    def priorities(self) -> dict[str, int]:
+        """返回注册表内各工具声明的预算优先级映射。"""
+        return {name: int(tool.priority) for name, tool in self._tools.items()}
 
     def names(self) -> list[str]:
         return sorted(self._tools)
@@ -391,8 +415,14 @@ class ToolRegistry:
 
         try:
             out = tool.fn(**args)
-            text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, default=str)
-            ok, err = True, ""
+            if (getattr(out, "_is_tool_result", False)
+                    and callable(getattr(out, "to_json", None))):
+                text = out.to_json()
+                ok = bool(getattr(out, "ok", True))
+                err = "" if ok else str(getattr(out, "error", "") or "工具执行失败")
+            else:
+                text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, default=str)
+                ok, err = True, ""
         except TypeError as e:
             # 参数不匹配是最常见的模型失误，单独报清楚
             text, ok, err = "", False, f"参数不匹配: {e}"
@@ -435,6 +465,13 @@ class ToolRegistry:
     def repeated_call(self, tc: ToolCall, threshold: int) -> bool:
         return self._fp_counts.get(tc.fingerprint, 0) >= threshold
 
+    def identical_calls(self, tc: ToolCall) -> int:
+        """同一工具 + 同一参数**累计**调过几次（stall 两段式用）。
+
+        与 `repeated_call` 读同一份 `_fp_counts`，不另算一套。
+        """
+        return self._fp_counts.get(tc.fingerprint, 0)
+
     def successful(self) -> list[ToolCall]:
         return [c for c in self.trace if c.ok]
 
@@ -453,6 +490,40 @@ class ToolRegistry:
 ESSENTIAL_TOOLS = ("deliver_task", "report_blocker",
                    "load_skill", "read_skill")
 
+#: 预算裁剪默认优先级（数值越小越先保留，未列工具默认 50）。
+#: 治的是字母序饥饿：`read_file` / `write_file`（r/w 开头）此前总排在
+#: `canvas_*` / `deck_*` / `diagram_svg` / `manuscript_*` 之后，在 18k/24k 预算下
+#: 会先被裁掉；按角色分层后，核心读写与基础分析基元永远先于重型工作台工具入列。
+DEFAULT_TOOL_PRIORITIES: dict[str, int] = {
+    "read_file": 10,
+    "write_file": 10,
+    "subagent": 15,
+    "kb_coverage": 20,
+    "convert_pdf": 25,
+    "plot_data": 30,
+    "plot_svg": 30,
+    "audit_figure": 30,
+    "writing_metrics": 35,
+    "word_count": 35,
+    # 重型常驻工作台（被预算裁掉时仍可通过 scope_fallback 首次调用即展开）
+    "canvas_act": 80,
+    "canvas_export": 80,
+    "deck_desk": 80,
+    "deck_make": 80,
+    "deck_plan": 80,
+    "deck_slide": 80,
+    "diagram_svg": 80,
+    "manuscript_check": 80,
+    "manuscript_desk": 80,
+    "manuscript_fix": 80,
+    "paper_status": 80,
+    "typeset": 80,
+    "typeset_export": 80,
+    "visual_place": 80,
+    "visual_plan": 80,
+    "visual_renumber": 80,
+}
+
 
 def schema_chars(schemas: list[dict]) -> int:
     """与事件流里 `schema_chars` 同一个口径，别在两处各算一遍。"""
@@ -460,12 +531,14 @@ def schema_chars(schemas: list[dict]) -> int:
 
 
 def apply_schema_budget(schemas: list[dict], budget: int,
-                        essential=ESSENTIAL_TOOLS) -> tuple[list[dict], list[str]]:
+                        essential=ESSENTIAL_TOOLS,
+                        priorities: dict[str, int] | None = None) -> tuple[list[dict], list[str]]:
     """给模型看的工具清单做**确定性**硬预算裁剪。
 
     学 ITR 的「按需暴露」，但守住 prompt caching 的硬规则：只在开场算一次，
-    结果整场冻结，不每步变形。顺序不是随手排的 —— `openai_schemas()` 已按
-    工具名排序，这里保持原序再按「必留 → 其余」分组，同一份输入永远同一个结果。
+    结果整场冻结，不每步变形。顺序不是随手排的 —— 先留 `essential`，其余工具
+    按优先级（核心读写基元 → 常规领域工具 → 重型常驻工作台）稳定排序、同档保持
+    `openai_schemas()` 的字典序，同一份输入永远同一个结果。
 
     必留工具即使单独超预算也保留：宁可报「预算被必留通道吃掉」，也不许
     把交付门拆了还回 ok。裁掉的名字**全部返回**，交给调用方发事件 ——
@@ -480,8 +553,13 @@ def apply_schema_budget(schemas: list[dict], budget: int,
         except (KeyError, TypeError):
             return ""
 
-    must = [s for s in schemas if _name(s) in set(essential)]
-    rest = [s for s in schemas if _name(s) not in set(essential)]
+    ess_set = set(essential)
+    prio_map = dict(DEFAULT_TOOL_PRIORITIES)
+    if priorities:
+        prio_map.update(priorities)
+    must = [s for s in schemas if _name(s) in ess_set]
+    rest = [s for s in schemas if _name(s) not in ess_set]
+    rest.sort(key=lambda s: prio_map.get(_name(s), 50))
     kept = list(must)
     dropped: list[str] = []
     for s in rest:

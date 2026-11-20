@@ -93,6 +93,27 @@ TESTS: list[dict] = [
     # 原生 SVG 出图 + 第 8 条门「预览路线」分支。正负控都在同一份里：
     # 九种图型真出图并读回、结构自检能打红、门的三个前提逐个反例。
     T("svgplot",      ["svgplot_test.py"]),
+    # SVG 质量门（svgq）：把结构自检升成可量的质量。纯标准库。
+    # 与上一行分工：那边守「产物结构 + 预览路线放行语义」，这边守
+    # 「字号物理量纲 / 对比度 / 文字容纳 / 碰撞 / 数据保真 / 字形」。
+    # 承重断言是 3.1：同一份「锚点在框内、字画出框外」的产物，
+    # 旧 inspect_svg 判通过、新门判红 —— 这条不成立门就是白加的。
+    T("svgq",         ["svgq_test.py"]),
+    # 第二层浏览器真尺子（svgmeasure）。**不是零依赖**：要 playwright + Chromium。
+    # 与上一行分工：那边全用估算替身，证明不了「浏览器真量出来的东西是对的」。
+    # 承重断言是 B5：本机 font 目录里确实装着的字体，探针必须判在。
+    #   第一版拿「一个故意不存在的字体名」当唯一基线，而它在中文 Windows 上
+    #   回退到的正是微软雅黑本身 ⇒ msyh.ttc 明明在却判不在（宽度全等）。
+    #   只装默认那一个中文字体的机器上，这个假阴性会翻成 missing_fonts ⇒ 假 FAIL。
+    #   已做变异自检：把三基线退回单基线，恰好 B5 失守（15 PASS / 1 FAIL）。
+    # 缺件时响亮 SKIP 且 rc=2（同 kb_convert，本仓 I 型），绝不把没跑报成通过。
+    T("svgmeasure",   ["svgmeasure_test.py"], zero_dep=False),
+    # 机制图后端 + 常驻插件（svgdiagram / svg_diagram）。模型只声明规格，
+    # 几何全由后端算；「线不穿框」「区室不吞并」是布局保证，门量不到，
+    # 所以 B1/B3 直接量布局与产物几何，B3 另用整组并集框当负控证明检查器有牙。
+    # 承重自检 C4/D3：让位失效 / 退回旧留白口径 ⇒ 碰撞门必须红。
+    # D 段要浏览器，缺件响亮 SKIP 且 rc=2（同 svgmeasure）。
+    T("svgdiagram",   ["svgdiagram_test.py"], zero_dep=False),
     # 组会 PPT（第 9 条硬门 + 领域按需挂载）。
     # ⚠️ **它已经不是"纯标准库"了**（2026-09-21 晚订正）：
     #   本行原写「纯标准库 ⇒ 零依赖，3.13 也跑」。前半句早就过时了 ——
@@ -158,6 +179,32 @@ TESTS: list[dict] = [
     # 带文件指纹基线的一次性守卫 —— 指纹基线会被后续正当改动撞红（实测 19/20），
     # 行为级判据不会。纯标准库 + 假领域表 ⇒ 零依赖，两个解释器下应得同一个数。
     T("mentor",       ["mentor_test.py"]),
+    # 导师「真视角」：立场 / 四镜头 / 可复算疑点 / 结构化 finding 读回，
+    # 含十条定向负控（每条只翻自己）与「生产真接线」端到端断言。
+    # 单开一套，是因为原来 mentor 套件只管出处标注与挂载，管不到「评得对不对」。
+    T("mentor-review", ["mentor_review_test.py"]),
+    # 组会预演 / 开题答辩（2026-11-14 用户点名的两个场景）。单开一套的理由：
+    # mentor-review 那套锁的是「终审稿子评得对不对」，这一套锁的是**会前**的两种
+    # 形态 —— 预演讲什么（Q 标号 / 预判提问）与「预演直接给 PASS」要打回去。
+    # 三个真缺陷是在真回包与真材料上量出来的：换行被当成「递了成篇材料」、
+    # Markdown 表不算原表、`[Q1]` 解析不出来。
+    T("mentor-rehearsal", ["mentor_rehearsal_test.py"]),
+    # 导师模型（advisor profile，2026-11-14 续）：把某位导师的判断方式蒸馏成四层
+    # （method_core / academic / persona / playbook）。单开一套的理由：它锁的不是
+    # 「评得对不对」，而是**判准从哪来、能不能核** —— source= 标注、空层不补模板、
+    # 改前备份、命中不了就一个字都不注入。素材不够时靠模板蒙混，是这条链上
+    # 唯一会静默失效的地方（用户会以为在用自己导师的判准，其实用的是通用模板）。
+    T("advisor",      ["advisor_test.py"]),
+    # 接线：从界面按下发送到内核组装提示词，中间四跳。断任何一跳都不会报错，
+    # 所以判据是**真跑一遍去提示词里找那位导师的判准原文**，不是 grep 源码。
+    T("advisor-wire", ["advisor_wire_test.py"]),
+    T("outline", ["outline_test.py"]),
+    # 方法台账 + 创新点（2026-11-15）：参数必带 src、版本不可复用/覆盖、
+    # 作废不改旧行、专利线索**不下新颖性结论**。
+    T("methods", ["methods_test.py"]),
+    # 板内质控（2026-11-16）：算法口径取自 GitHub plateqc(MIT)，
+    # 但修了它的 nan/inf 静默污染，并把删失值与缺失值分桶。
+    T("plate", ["plate_test.py"]),
     T("mentor_ui",    ["mentor_ui_test.py"]),
     # 导师模式的**工作台**半边（W28）：有界文档索引 / 一窗正文（offset/limit）/
     # 卡点分页（open|resolved|all）/ 会话课题身份（`mentor_mode` 事件 + 快照）。
@@ -190,8 +237,86 @@ TESTS: list[dict] = [
     # 不碰共享状态，但 `import rongke.loop` 要重依赖 ⇒ 与 :239 同族，
     # 标 zero_dep=False（3.13 零依赖子集跑不了，标错不如不标）。
     T("system-assembly", ["system_assembly_test.py"], zero_dep=False),
+    # 写作前技能简报：baseline 逐字节等价 / 挂载真注入 / 缺件不坏件 / 预算硬。
+    # 正控负控都量，不把「挂上了」当成「生效了」。
+    T("stage-brief",  ["stage_brief_test.py"], zero_dep=False),
+    # 过程反馈：一次读回「还差什么」；判定面优先落盘全文（含附表）。
+    T("process-feedback", ["process_feedback_test.py"], zero_dep=False),
+    T("source-alignment", ["source_alignment_test.py"], zero_dep=False),
+    # 2026-11-09 本场结构单源：形状→步数/预设、工作区读回同源、大纲门分母。
+    # 正控负控都量：带附录的规范大纲必须一次过门，真空章仍必须打回。
+    T("shape",        ["shape_test.py"], zero_dep=False),
+    # 2026-11-09 稿件台常驻插件：格式体例 + 前端可视化数据。
+    # 负控钉死用户裁决：不进任何预设、不加前端胶囊、baseline rows 不变。
+    T("manuscript-desk", ["manuscript_desk_test.py"], zero_dep=False),
+    # 2026-11-10 交付就绪度：判据/预算前移进工具回包；纯只读（绝不碰 gate）、
+    # 成熟度分诊、长综述无人值守自动续步（intervene_test 第 8 节同场复验）。
+    T("readiness",    ["readiness_test.py"], zero_dep=False),
+    # 2026-11-10 图表编排台：图/表插进正文的原子基元 + 锚点判据；
+    # 常驻、不进预设、预览级不冒充投稿级，正负控与承重自检都量。
+    T("visual-desk",  ["visual_desk_test.py"], zero_dep=False),
+    # 2026-11-10 幻灯片编排台：结构化内容 → 带正文源稿 → 精排 → 讲稿 →
+    # 写后读回 → 幻灯片台。量常驻/不进预设、六种页型、短讲稿读回、
+    # 失败不改交付件、能力不可用不静默降级、围栏、四个工具真调。
+    T("deck-desk",    ["deck_desk_test.py"], zero_dep=False),
+    # 2026-11-10 深夜：AI 画布（用户纠正方向后的图元级工具）。
+    # aideck 是项目根下的**独立包**（不进 rongke/），判据走包内 selftest 的
+    # 包装脚本；canvas-desk 量的是「主循环里的 AI 真够得着这个工具」。
+    T("aideck",       ["aideck_test.py"], zero_dep=False),
+    T("canvas-desk",  ["canvas_desk_test.py"], zero_dep=False),
+    # 2026-11-11 格式排版台 + 论文生态总线：AI 声明 blocks，版式由 STYLES 单源算；
+    # HTML/docx/tex 三条路逐块读回；论文台只读汇总写/画/排/讲/投的交付态。
+    # 量常驻/不进预设、体例三档、坏图降级、源稿优先级、承重自检。
+    T("typeset",      ["typeset_test.py"], zero_dep=False),
+    # 2026-11-11 GitHub 调研备料：工具「可调用种类」的目录单源。
+    # 量目录与真实枚举读回一致、许可分级有牙（GPL/CC BY-SA/不明一律不放行）。
+    T("catalogs",     ["catalogs_test.py"], zero_dep=False),
+    # 能力工具化准入：只量「成品会不会变好」这条轴。三套已验证工具（数据图/PPT/
+    # 排版）必须 exemplar；查询侧工具不得冒充产出侧；每条准入都有短路承重负控。
+    T("toolize",      ["toolize_test.py"], zero_dep=False),
+    # 文献池单源：检索台账去重 / 逐篇判定留痕 / 精读卡回溯全文 / 章-文献映射 /
+    # 五连读回每环单独打红 / 删文献成孤儿 / 老式编号引注不误伤 / 写后逐字节读回。
+    T("litpool",      ["litpool_test.py"], zero_dep=False),
+    # 文献池所有权层：回包自动入池 / 写后引导 / 交付态结论 / 章映射越界 advisory /
+    # 主循环接线用 AST 钉住（含 gate.check 仍只 1 处、参数链未动）。
+    T("litpool-guard", ["litpool_guard_test.py"], zero_dep=False),
+    # 机制图状态面：给 AI 的图元级 Origin（机制图.json 单源、稳定 id、query /
+    # 只改一个图元、级联删、投影剥内部字段、默认路径零副作用、七道门复用、
+    # 真 ToolRegistry.call 参数链、AST 钉门数）。工具数不变、SYSTEM 不动。
+    T("diagram-state", ["diagram_state_test.py"], zero_dep=False),
+    # 交付物质量：真出图 / 真浏览器实测 / 形状内接框容量 / 文字容纳门的
+    # verdict 与反馈闭环 / 区室结构身份 / 宽图可执行建议值。
+    # 基准独立于被测模块（1.20 来自 12 样本实测上界），正负控两方向都量。
+    T("diagram-quality", ["diagram_quality_test.py"], zero_dep=False),
+    # AI 操作面协议：显式回执 / 乐观锁 / 分层读取 / 意图级真原子事务 /
+    # 快照回滚 / 双通道反馈 / 默认路径零副作用。按 GitHub 上的
+    # AI-native 画布接口模式落地，工具数与门数都不许长。
+    T("diagram-surface", ["diagram_surface_test.py"], zero_dep=False),
+    # 布局意图：layout/align/route 真的改变几何（量 polys/center 指纹，
+    # 不量文案）；空 hints 与默认逐点一致；七道门不退化；默认路径零副作用。
+    T("diagram-layout", ["diagram_layout_test.py"], zero_dep=False),
+    # 工艺审计（2026-11-14）：配色语义 / 尺度均衡 / 折行断词 / 标签压线 /
+    # 区室不嵌套 / 回边不穿节点，六条各带改坏即红的负控。
+    T("diagram-craft", ["diagram_craft_test.py"], zero_dep=False),
+    # 科研通路插图（另一种品类）：磷脂膜 / 细胞器 / 波浪 mRNA / 修饰点 /
+    # 低饱和分区；写后读回、七道门实测、图元级操作面与事务回滚。
+    T("pathway",       ["pathway_test.py"], zero_dep=False),
+    # P0 第一批真接入的 11 种：几何结构指纹 / 七道门不退化 / 描述单源 / 许可防线。
+    T("kinds-p0",     ["kinds_p0_test.py"], zero_dep=False),
+    # 图表身份层：登记单源、编号重编、五连读回、向后兼容与承重自检。
+    T("figure-registry", ["figure_registry_test.py"], zero_dep=False),
+    # 真任务暴露的三处：调用时机简报 / 覆盖丢锚点 / writing 自动续步。
+    T("call-timing",    ["call_timing_test.py"], zero_dep=False),
+    T("fix-all",        ["fix_all_test.py"], zero_dep=False),
+    # 岸记：实验手记 / 规划看板做成外部记忆插件。量体例、append-only、读回一致、
+    # 规划同源、挂载与撤销纪律，以及「配置在场 ≠ 已生效」的真调 fn 落盘。
+    T("shore-journal", ["journal_test.py"], zero_dep=False),
     T("telemetry",    ["telemetry_test.py"]),
     T("tools",        ["tools_test.py"]),
+    # 接线全景只读自检（2026-11-14）：九条判据 + 每条定向负控 + 会话指纹两方向。
+    # 单开一套，是因为「模块都在、线没接上」这类事故（force_brief 单测全绿但
+    # 生产没调）在别处测不到；末尾还有源码级断言钉住 CLI / Web / regress 三处接线。
+    T("wiring",       ["wiring_test.py"]),
     T("web",          ["web_test.py"]),
     # 零覆盖路由冒烟（2026-10-12 体检补）。为什么单开：那次对撞发现
     # server.py 34 条 `/api/` 路由里有 16 条**没有任何测试提到**，
@@ -408,6 +533,12 @@ TESTS: list[dict] = [
     # 授权（离线激活码）。含 Ed25519 对 RFC 8032 官方向量的自证 ——
     # 自写的密码学「看起来对」是最危险的状态，必须机械证伪。
     T("license",      ["license_gate_test.py"], zero_dep=False),
+    # 订阅 v2 授权链：老内核零改动认新码、起算点、幂等、续期无空窗、双台账对账。
+    # 全部落在 tools/ 与测试侧，不改 rongke/*.py；测试密钥临时生成并 try/finally 还原。
+    T("license-v2",   ["license_v2_test.py"]),
+    # 同一条链的另一层：命令行参数解析 / 退出码 / 跨工具交接 / sdist 清单自洽。
+    # 缺发行私钥时明确 SKIP 且不计入通过数，不把「没测到」伪装成绿。
+    T("license-v2-cli", ["license_v2_cli_test.py"]),
     # 产品说明与代码对账：文档里的数字（工具数/域数/图型数/价格/额度）
     # 必须与代码算出来的对得上。数字是最容易腐坏的东西，而没人会去数 ——
     # 实测已经抓到一次（我把"10 种图型"写成内置值，内置其实是 9 种）。
@@ -432,6 +563,7 @@ TESTS: list[dict] = [
     T("library-ui",   ["library_ui_test.py"]),
     T("library-negctl", ["library_api_negctl_test.py"], zero_dep=False),
     T("topic-routes", ["topic_route_test.py"]),
+    T("lab-routes",   ["lab_route_test.py"]),
     T("topic-library", ["topic_library_test.py"]),
     T("topic-library-http", ["_rev_probe_api.py"]),
     T("dialogue-thinking", ["dialogue_thinking_test.py"]),
@@ -439,6 +571,7 @@ TESTS: list[dict] = [
     T("figure-route", ["figure_route_test.py"]),
     T("topic-workflow", ["topic_workflow_test.py"]),
     T("mentor-workspace", ["mentor_workspace_test.py"]),
+    T("subagent", ["subagent_test.py"]),
 ]
 
 UI_SHOT = T("ui_shot", ["ui_shot.py"], counted=False, zero_dep=False,

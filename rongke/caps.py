@@ -139,20 +139,37 @@ def ensure_external_loaded() -> list[dict]:
         for i, f in enumerate(sorted(d.glob("*.py"))):
             if f.name.startswith("_"):
                 continue
+            mod = f"_rongke_ext_{abs(hash(str(f)))}_{i}"
+            _before = set(_REGISTRY)
             try:
-                mod = f"_rongke_ext_{abs(hash(str(f)))}_{i}"
                 spec = importlib.util.spec_from_file_location(mod, f)
                 if spec is None or spec.loader is None:
                     raise ImportError(f"无法为 {f} 建立 import spec")
                 m = importlib.util.module_from_spec(spec)
                 sys.modules[mod] = m
-                _before = set(_REGISTRY)
                 spec.loader.exec_module(m)
+            except Exception as e:                          # noqa: BLE001
+                # ★ 原子回滚：一个 .py 可能先 `@register` 成功、随后才抛错
+                #   （同名重复注册是最常见的一种）。撤掉它这一步已落下的名字，
+                #   否则会同时造成两件静默事故：
+                #     ① 残留名字进不了 _EXTERNAL_NAMES ⇒ always_on_capabilities()
+                #        看不见它 ⇒ 常驻能力**丢得无声无息**，却仍 resolve 得到；
+                #     ② 下一次重扫（哪怕文件已修好）会撞「能力名重复注册」，
+                #        永远起不来，报错还长得像「文件仍然是坏的」。
+                #   实测（runs/_probe_ext_leak.py）：修好文件后 errors 仍 1 条、
+                #   always_on 仍为空。失败就是失败，不许留下半个状态。
+                leaked = sorted(set(_REGISTRY) - _before)
+                for n in leaked:
+                    _REGISTRY.pop(n, None)
+                sys.modules.pop(mod, None)
+                _EXTERNAL_ERRORS.append({
+                    "file": str(f),
+                    "error": f"{type(e).__name__}: {e}",
+                    "rolled_back": leaked,
+                })
+            else:
                 _EXTERNAL_NAMES.extend(set(_REGISTRY) - _before)
                 _EXTERNAL_FILES.append(str(f))
-            except Exception as e:                          # noqa: BLE001
-                _EXTERNAL_ERRORS.append(
-                    {"file": str(f), "error": f"{type(e).__name__}: {e}"})
     return list(_EXTERNAL_ERRORS)
 
 
@@ -163,6 +180,35 @@ def available_sections() -> list[str]:
     for cls in _REGISTRY.values():
         names.update((getattr(cls, "SECTION_TEXTS", {}) or {}).keys())
     return sorted(names)
+
+
+def always_on_capabilities() -> list[str]:
+    """**必须加载**的外部能力名 —— 不依赖任何预设点名。
+
+    有些能力是基础约束（稿件体例、稿件台数据），不该让人先点一个胶囊
+    才生效。能力类自己声明 `ALWAYS_ON = True`，这里无条件收进挂载清单。
+    删掉 `caps_ext/*.py` ⇒ 注册表里没有 ⇒ 自动退回原样，不报错。
+    """
+    ensure_external_loaded()
+    # 只认**本次扫描到的外部能力名**，不扫整个 _REGISTRY：
+    # 换目录重扫 / 删掉 .py 后，旧名字可能还残留在注册表里，
+    # 直接遍历会把「已经不存在的插件」当成必须加载。
+    return sorted(n for n in set(_EXTERNAL_NAMES)
+                  if n in _REGISTRY
+                  and getattr(_REGISTRY[n], "ALWAYS_ON", False))
+
+
+def always_on_tool_names() -> list[str]:
+    """常驻能力注册的工具名（判据用单源，别在三个测试里各写一遍）。
+
+    它们是**长命工具**：不进 `Caps.registered_tools` 撤销清单，
+    所以「baseline 不注册任何工具」这类老判据要按 `n0 + len(本表)` 更新。
+    """
+    ensure_external_loaded()
+    out: set[str] = set()
+    for n in always_on_capabilities():
+        out.update(getattr(_REGISTRY[n], "ESSENTIAL_TOOLS", ()) or ())
+    return sorted(out)
 
 
 def reset_external_loader() -> None:
@@ -392,10 +438,89 @@ class MountReport:
                 "conflicts": list(self.conflicts)}
 
 
+class MountContext(dict):
+    """一次能力挂载的共享上下文（`dict` 子类，100% 兼容既有 `ctx.get(...)` 写法）。
+
+    ★ 关键修复：`WritingMetricsTool` 等工具能力在 `mount(cfg, ctx)` 期间捕获 `ctx`
+      供运行时回调读回 `ctx.get("caps")`。由 `load_capability_preset()` /
+      `MountedSession` 持有同一个 `MountContext` 并在构造 `Caps` 后立刻回填
+      `live_ctx["caps"] = caps`，彻底消除浅拷贝导致 `ctx.get("caps") is None` 的缺陷。
+    """
+
+    def __init__(self, initial: dict | None = None, *, registry=None, caps=None):
+        super().__init__(initial or {})
+        if registry is not None:
+            self["registry"] = registry
+        if caps is not None:
+            self["caps"] = caps
+        self.setdefault("capabilities", {})
+
+    @classmethod
+    def from_mapping(cls, ctx: dict | None) -> "MountContext":
+        if isinstance(ctx, cls):
+            ctx.setdefault("capabilities", {})
+            return ctx
+        return cls(ctx)
+
+    @property
+    def registry(self):
+        return self.get("registry")
+
+    @property
+    def caps(self):
+        return self.get("caps")
+
+    @caps.setter
+    def caps(self, value) -> None:
+        self["caps"] = value
+
+    @property
+    def registered_tools(self) -> list[str]:
+        return list(self.get("registered_tools") or [])
+
+
+def mount_always_on(registry=None, *, ctx: dict | None = None) -> list[MountResult]:
+    """挂载全部平台常驻外部能力（`ALWAYS_ON = True`），与 per-run 预设挂载解耦。
+
+    - 若传入 `registry` 且某常驻能力声明的 `ESSENTIAL_TOOLS` 已全部在册，跳过重复
+      实例化与挂载（幂等）；
+    - 实例**不放进** `ctx["capabilities"]`：保持 `baseline` SYSTEM 逐字节等价；
+    - 成功不写 `MountResult`（不改变 `/api/presets` 的 rows 与健康口径）；
+      失败返回 `MountResult(ok=False, kind="external")`，绝不静默降级。
+    """
+    live = ctx if ctx is not None else MountContext(registry=registry)
+    if registry is not None and live.get("registry") is None:
+        live["registry"] = registry
+    reg = live.get("registry")
+    broken: list[MountResult] = []
+    for name in always_on_capabilities():
+        cls = resolve(name)
+        if cls is None:
+            continue
+        if reg is not None:
+            ess = tuple(getattr(cls, "ESSENTIAL_TOOLS", ()) or ())
+            if ess and all(reg.get(t) is not None for t in ess):
+                continue
+        try:
+            inst = cls()
+            always_cfg = dict(getattr(cls, "ALWAYS_CONFIG", {}) or {})
+            inst.mount(always_cfg, live)
+            live.setdefault("always_on", []).append(
+                {"name": name, "id": inst.id,
+                 "provides": list(inst.provides())})
+        except Exception as e:                               # noqa: BLE001
+            broken.append(MountResult(
+                "<常驻能力>", name, False, kind="external",
+                error=f"常驻能力装载失败：{type(e).__name__}: {e}",
+                hint="检查 caps_ext 里这个 .py 的 mount()，或先移出目录"))
+    return broken
+
+
 def mount_preset(preset: CapPreset, conflicts: list[str] | None = None,
-                 ctx: dict | None = None) -> MountReport:
+                 ctx: dict | None = None, *,
+                 include_always_on: bool = True) -> MountReport:
     """resolve → config 校验 → mount。任一步失败即 broken，且保留原话。"""
-    ctx = ctx if ctx is not None else {}
+    ctx = ctx if ctx is not None else MountContext()
     ctx.setdefault("capabilities", {})
     results: list[MountResult] = []
     # ★ 外部能力导入失败也算坏件。不在这里记，坏 .py 会「装不上但预设全绿」——
@@ -432,6 +557,10 @@ def mount_preset(preset: CapPreset, conflicts: list[str] | None = None,
             results.append(MountResult(row.id, row.name, False, kind=cls.kind,
                                        source=row.source,
                                        error=f"mount 抛异常：{type(e).__name__}: {e}"))
+    # ── 常驻能力：默认委托 mount_always_on()（已注册的常驻工具不重复装载）──
+    # `all_presets_health()` 等只读批检可传 `include_always_on=False` 避免 N 次重复装载。
+    if include_always_on:
+        results.extend(mount_always_on(ctx.get("registry"), ctx=ctx))
     # ★ 层栈冲突也进 broken：冲突行在 assemble 阶段就被挡在 rows 之外，
     #   只记 conflicts 的话，调用方还得再读第二个字段才算看得全。
     for c in (conflicts or []):
@@ -473,7 +602,9 @@ class Caps:
     def __init__(self, preset_id: str = "", report: MountReport | None = None,
                  by_id: dict | None = None,
                  registered_tools: list[str] | None = None,
-                 preset_stages: list[str] | None = None):
+                 preset_stages: list[str] | None = None,
+                 preset_config: dict | None = None,
+                 preset_scenes: list[str] | None = None):
         self.preset_id = preset_id
         self.report = report or MountReport([], [])
         self.by_id: dict[str, tuple[Any, dict]] = by_id or {}
@@ -487,6 +618,8 @@ class Caps:
         #   注意它**不是**一份要全量塞进上下文的清单：清单只用来选工序，
         #   协议正文仍由模型按 `load_skill` 按需读（渐进式披露）。
         self.preset_stages: list[str] = list(preset_stages or [])
+        self.preset_config: dict = {k: dict(v) for k, v in (preset_config or {}).items()}
+        self.preset_scenes: list[str] = list(preset_scenes or [])
 
     @classmethod
     def empty(cls) -> "Caps":
@@ -616,6 +749,33 @@ class Caps:
     def bracket_pairs(self) -> list[str]:
         return list(self.flag("citation", "bracket_pairs", ["[n]"]) or [])
 
+    def initial_domains(self) -> list[str]:
+        """本场预设声明的初始挂载域清单（未挂载 `@rongke/mount-tools` 时返回空）。"""
+        m = self.inst("mount")
+        if m is not None and hasattr(m, "domains"):
+            return list(m.domains())
+        return list(self.flag("mount", "initial_domains", []) or [])
+
+    def effective_compact_target(self, cfg_default: int) -> int:
+        """解析本场上下文压缩阈值：baseline 不再静默覆写用户 `config.json` 配置。"""
+        cc = self.inst("context")
+        if cc is None:
+            return int(cfg_default)
+        fn = getattr(cc, "effective_target_chars", None)
+        if callable(fn):
+            return int(fn(cfg_default, preset_id=self.preset_id))
+        return int(cc.cfg.get("target_chars", cfg_default))
+
+    def effective_compact_keep_live(self, cfg_default: int) -> int:
+        """解析本场压缩保留条数：仅在预设显式偏离基线时覆盖 `cfg.loop.compact_keep_live`。"""
+        cc = self.inst("context")
+        if cc is None:
+            return int(cfg_default)
+        fn = getattr(cc, "effective_keep_live", None)
+        if callable(fn):
+            return int(fn(cfg_default, preset_id=self.preset_id))
+        return int(cfg_default)
+
     def invalidate_mount_cache(self) -> None:
         """工具清单变动后，让 `refresh=once` 的 schema 缓存失效。
 
@@ -644,89 +804,42 @@ def _layer_from_file(path: Path) -> dict:
 
 def load_capability_preset(pid: str, *, directory: Path | None = None,
                            home: Path | None = None,
-                           ctx: dict | None = None) -> Caps:
+                           ctx: dict | None = None,
+                           resolved=None,
+                           include_always_on: bool = True) -> Caps:
     """装载一份预设并**挂载**。判健康只认 `MountReport.broken`。
 
-    层顺序：base 层（可选） → 预设层 → 个人覆盖层（`~/.rongke/config.json`
-    的 `presets.<id>.plugins`）。个人层未写 `op` 的行默认按 `patch` 处理。
+    层顺序：递归 `base` 链（可选，防环） → 预设层 → 个人覆盖层（`~/.rongke/config.json`
+    的 `presets.<id>`）。个人层未写 `op` 的插件行默认按 `patch` 处理。
     """
-    from .preset import presets_dir, personal_layer, list_presets, PresetError
+    from .preset import presets_dir, resolve_preset
 
     d = Path(directory) if directory is not None else presets_dir()
-    # ① 复用 preset.py 的 (good, broken) 与 (order, id) 排序 —— 它本来就是死代码，
-    #    这里把它接活；坏件不静默滤掉。
-    good, broken = list_presets(d)
-    matches = [p for p in good if p.id == pid]
-    if not matches:
-        return Caps(pid, MountReport([
-            MountResult(pid, "", False,
-                        error=f"预设 {pid!r} 不可用：" +
-                        (f"装载失败 {broken}" if broken else
-                         f"目录里没有这个 id（可用 {[p.id for p in good]}）"))], []))
-    for stem, why in broken:
-        if stem == pid:
+    if resolved is None:
+        resolved, err = resolve_preset(pid, directory=d, home=home)
+        if resolved is None:
             return Caps(pid, MountReport([
-                MountResult(pid, "", False, error=f"预设文件校验失败：{why}")], []))
+                MountResult(pid, "", False, error=err)], []))
 
-    path = d / f"{pid}.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    layers: list[dict] = []
-    base = str(raw.get("base") or "").strip()
-    if base:
-        bp = d / f"{base}.json"
-        if not bp.is_file():
-            return Caps(pid, MountReport([
-                MountResult(pid, "", False,
-                            error=f"base 层 {base!r} 不存在（{bp}）")], []))
-        layers.append(_layer_from_file(bp))
-    layers.append(_layer_from_file(path))
-    try:
-        personal = personal_layer(home)
-    except PresetError as e:
-        return Caps(pid, MountReport([
-            MountResult(pid, "", False, error=f"个人层不合法：{e}")], []))
-    layer = personal.get(pid)
-    if layer is not None:
-        if not isinstance(layer, dict):
-            return Caps(pid, MountReport([
-                MountResult(pid, "", False,
-                            error=f"个人层 presets.{pid} 必须是对象")], []))
-        rows = []
-        for r in (layer.get("plugins") or []):
-            r = dict(r) if isinstance(r, dict) else {}
-            r.setdefault("op", "patch")
-            rows.append(r)
-        if rows:
-            layers.append({"source": "personal", "plugins": rows})
-
-    cap_preset, conflicts = assemble(layers)
-    cap_preset.id = pid
-    cap_preset.name = str(matches[0].name or pid)
-    # ★ ctx 必须由这里创建并传进去：mount_preset 往它里面写 capabilities，
-    #   若传 None 它会在自己作用域里另建一个 dict，外面就永远读不到实例。
-    live_ctx: dict = dict(ctx or {})
-    report = mount_preset(cap_preset, conflicts, ctx=live_ctx)
+    cap_preset, conflicts = assemble(list(resolved.layers))
+    cap_preset.id = resolved.id
+    cap_preset.name = str(resolved.name or resolved.id)
+    # ★ 统一走 MountContext：mount_preset 写入 capabilities 与 registered_tools，
+    #   构造完 Caps 后立刻把 live_ctx["caps"] = caps 填回**同一个对象**，
+    #   让 WritingMetricsTool 等工具回调闭包读回真 Caps（不再恒为 None）。
+    live_ctx = MountContext.from_mapping(ctx)
+    report = mount_preset(cap_preset, conflicts, ctx=live_ctx,
+                          include_always_on=include_always_on)
     by_id = {}
     for _kind, items in live_ctx.get("capabilities", {}).items():
         for rid, inst, cfg in items:
             by_id[rid] = (inst, cfg)
-    # ★ 从**同一个 live_ctx** 里读回挂载期登记的工具名：它是 dict(ctx) 的浅
-    #   拷贝，mount 写进去的东西不会出现在调用方那个 ctx 上，只有这里看得到。
-    #   坏件也照样带上 —— 中途失败时更要能清理掉已经注册的工具。
-    #
-    # ★ 工序清单从**校验过的 Preset 对象**取（不是 raw JSON）：`preset.validate()`
-    #   已经逐个核过 id 必须存在于 STAGE_BY_ID，写错一个字整份预设就 broken，
-    #   不会出现「声明了却查无此工序」的静默失效。个人覆盖层只管 plugins，
-    #   不改工序 —— 这样「这轮按哪套工序跑」始终只有一个来源。
+
     from .stages import STAGE_BY_ID as _STAGE_BY_ID, available as _available
-    declared = [s for s in list(getattr(matches[0], "stages", []) or [])
+    declared = [s for s in list(resolved.stages or [])
                 if s in _STAGE_BY_ID]
     # ★ 2026-11-04：只验「工序 id 存在」还不够 —— 工序名是代码里的常量，
-    #   它指向的 **skill 是磁盘上的文件**。客户机没带 vendor/skills、
-    #   或用户没装 ~/.agents/skills 时，工序照样验过、预设照样全绿，
-    #   硬门却要求模型去 load_skill 一个根本读不到的技能：
-    #   「读不到」被当成「没做」，一场本来能交的活会被自己的门罚死。
-    #   所以挂载期就把这条读回来，缺件直接进 broken（唯一健康判据）。
+    #   它指向的 **skill 是磁盘上的文件**。缺件直接进 broken（唯一健康判据）。
     _have = _available()
     _missing = [f"{s} → {_STAGE_BY_ID[s].skill}" for s in declared
                 if _STAGE_BY_ID[s].skill not in _have]
@@ -736,9 +849,15 @@ def load_capability_preset(pid: str, *, directory: Path | None = None,
             error="预设声明的工序，其专属技能读不到：" + "；".join(_missing),
             hint="检查 vendor/skills 是否随包分发、~/.agents/skills 是否装有该技能；"
                  "缺件时不要把 stage.hard 打开"))
-    caps = Caps(pid, report, by_id,
-                registered_tools=list(live_ctx.get("registered_tools") or []),
-                preset_stages=declared)
+    caps = Caps(resolved.id, report, by_id,
+                registered_tools=live_ctx.registered_tools,
+                preset_stages=declared,
+                preset_config=resolved.config_patch(),
+                preset_scenes=resolved.scenes)
+    # ★ 关键回填：让挂载期捕获 live_ctx 的工具回调在执行期读到真实 Caps。
+    live_ctx["caps"] = caps
+    if ctx is not None and ctx is not live_ctx:
+        ctx["caps"] = caps
     # 结构性覆盖只允许一个来源。两个能力都声称「这份 system 由我说了算」
     # 时静默挑一个，等于用户配了两份却永远看不到其中一份 ⇒ 拦沉默，
     # 且仍只认 `MountReport.broken` 这一个健康出口。
@@ -750,6 +869,110 @@ def load_capability_preset(pid: str, *, directory: Path | None = None,
                   "、".join(rid for rid, _ in _owners),
             hint="结构性覆盖只能有一个来源；其余能力改用 SYSTEM_SECTIONS 贡献节"))
     return caps
+
+
+class MountedSession:
+    """一次运行期能力装配的上下文管理器（挂载 → 回填 `live_ctx["caps"]` → 确定性清理）。
+
+    用于取代在长命内核单例上分散手工切 `self.caps` + 维护外部 `cleanup_tools` 列表：
+    - `__enter__`：挂载指定预设（失败时若有 `baseline_caps` 则回退并记明 `error`，
+      仍保留中途已注册的临时工具待清理）；若传入 `cfg` 且预设含 `config` 覆写，
+      通过 `cfg.with_overrides()` 生成不可变 `effective_cfg`。
+    - `adopt(extra_caps)`：接管中途路由（如长综述自动挂 `paper-writing`）追加的新能力与
+      临时工具，统一归入同一次 `__exit__` 清理。
+    - `__exit__`：按清单撤销全部临时工具（不误撤常驻或开机工具），作废 schema 缓存，
+      清理失败记入 `cleanup_errors` 而不覆盖任务结果。
+    """
+
+    def __init__(self, preset_id: str = "", registry=None, *,
+                 baseline_caps: Caps | None = None,
+                 cfg=None,
+                 directory: Path | None = None,
+                 home: Path | None = None,
+                 include_always_on: bool = True):
+        self.preset_id = str(preset_id or "").strip()
+        self.registry = registry
+        self.baseline_caps = baseline_caps
+        self.base_cfg = cfg
+        self.directory = directory
+        self.home = home
+        self.include_always_on = include_always_on
+        self.caps: Caps = baseline_caps if baseline_caps is not None else Caps.empty()
+        self.effective_cfg = cfg
+        self.error: str = ""
+        self.config_error: str = ""
+        self.cleanup_tools: list[str] = []
+        self.cleanup_errors: list[dict] = []
+        self._boot_tools: set[str] = set(
+            getattr(baseline_caps, "registered_tools", []) or [])
+        self._adopted: list[Caps] = []
+
+    def _record_tools(self, caps: Caps) -> None:
+        for t in (getattr(caps, "registered_tools", []) or []):
+            if t not in self._boot_tools and t not in self.cleanup_tools:
+                self.cleanup_tools.append(t)
+
+    def __enter__(self) -> "MountedSession":
+        pid = self.preset_id or (
+            self.baseline_caps.preset_id if self.baseline_caps is not None else "baseline")
+        if (self.baseline_caps is not None
+                and pid == self.baseline_caps.preset_id
+                and self.baseline_caps.healthy):
+            self.caps = self.baseline_caps
+        else:
+            live_ctx = MountContext(registry=self.registry)
+            try:
+                loaded = load_capability_preset(
+                    pid, directory=self.directory, home=self.home,
+                    ctx=live_ctx, include_always_on=self.include_always_on)
+            except Exception as e:                           # noqa: BLE001
+                self.error = f"装载抛异常：{type(e).__name__}: {e}"
+                self.caps = (self.baseline_caps
+                             if self.baseline_caps is not None else Caps.empty())
+            else:
+                self._record_tools(loaded)
+                if loaded.broken:
+                    self.error = "；".join(r.error for r in loaded.broken)
+                    self.caps = (self.baseline_caps
+                                 if self.baseline_caps is not None else loaded)
+                else:
+                    self.caps = loaded
+        if self.base_cfg is not None and self.caps.preset_config:
+            try:
+                self.effective_cfg = self.base_cfg.with_overrides(self.caps.preset_config)
+            except Exception as e:                           # noqa: BLE001
+                self.config_error = str(e)
+                self.effective_cfg = self.base_cfg
+        return self
+
+    def adopt(self, extra_caps: Caps) -> None:
+        """纳入中途二次路由挂载的能力，并同步应用其 `preset_config` 与工具撤销登记。"""
+        self._adopted.append(extra_caps)
+        self._record_tools(extra_caps)
+        if not extra_caps.broken:
+            self.caps = extra_caps
+            if self.base_cfg is not None and extra_caps.preset_config:
+                try:
+                    self.effective_cfg = self.base_cfg.with_overrides(
+                        extra_caps.preset_config)
+                except Exception as e:                       # noqa: BLE001
+                    self.config_error = str(e)
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self.registry is not None:
+            for t in list(self.cleanup_tools):
+                try:
+                    self.registry.unregister(t)
+                except Exception as e:                       # noqa: BLE001
+                    self.cleanup_errors.append({
+                        "tool": t,
+                        "preset": self.caps.preset_id,
+                        "error": f"{type(e).__name__}: {e}",
+                    })
+        for c in [self.caps, self.baseline_caps, *self._adopted]:
+            if c is not None and hasattr(c, "invalidate_mount_cache"):
+                c.invalidate_mount_cache()
+        return False
 
 
 def merge_preset_stages(contract, declared: list[str]) -> dict:
@@ -783,19 +1006,26 @@ def merge_preset_stages(contract, declared: list[str]) -> dict:
 
 def all_presets_health(*, directory: Path | None = None,
                        home: Path | None = None) -> dict:
-    """给 CLI / `--presets` / `GET /api/presets` 用的只读健康清单。"""
+    """给 CLI / `--presets` / `GET /api/presets` 用的只读健康清单（O(N) 一次扫盘）。"""
     from .preset import presets_dir, list_presets
 
     d = Path(directory) if directory is not None else presets_dir()
     good, broken = list_presets(d)
-    caps = {}
+    # 常驻能力只体检一次，避免按 N 份预设重复实例化 N 遍。
+    always_broken = mount_always_on(None)
+    caps_map = {}
     for p in good:
-        c = load_capability_preset(p.id, directory=d, home=home)
-        caps[p.id] = {"healthy": c.healthy, "rows": len(c.report.results),
-                      "broken": [r.error for r in c.report.broken],
-                      "summary": c.report.summary()}
-    items = [{"id": p.id, "name": p.name, "order": p.order,
-              "scenes": list(p.scenes), **caps.get(p.id, {})} for p in good]
+        c = load_capability_preset(p.id, directory=d, home=home,
+                                   include_always_on=False)
+        if always_broken:
+            c.report.results.extend(always_broken)
+        caps_map[p.id] = {"healthy": c.healthy, "rows": len(c.report.results),
+                          "broken": [r.error for r in c.report.broken],
+                          "summary": c.report.summary()}
+    items = [{"id": p.id, "name": p.name, "description": p.description,
+              "order": p.order, "scenes": list(p.scenes),
+              "stages": list(p.stages), **caps_map.get(p.id, {})}
+             for p in good]
     bad = [{"id": stem, "why": why} for stem, why in broken]
     return {"good": items, "broken": bad,
             "healthy": not bad and all(x.get("healthy") for x in items)}

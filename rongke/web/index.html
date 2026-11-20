@@ -36,6 +36,7 @@
 <link rel="stylesheet" href="/static/workspace.css">
 <link rel="stylesheet" href="/static/library.css">
 <link rel="stylesheet" href="/static/mentor.css">
+<link rel="stylesheet" href="/static/lab.css">
 <link rel="stylesheet" href="/static/reader.css">
 <link rel="stylesheet" href="/static/layout.css">
 </head>
@@ -68,6 +69,7 @@
       <div class="navcap">我的科研</div>
       <button data-v="kb" class="navbtn" title="文献库 · 手头的 PDF，也能让 AI 找文献入库" aria-label="文献库"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.8" width="9" height="10.4" rx="1"/><path d="M6 2.8v10.4M7.6 5.6h3.2"/></svg></span><span class="lbl">文献库</span></button>
       <button data-v="mentor" class="navbtn" title="导师与课题 · 管理研究问题、台账和本课题文献" aria-label="导师与课题"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5" r="2.5"/><path d="M3 13c.5-3 2.2-4.5 5-4.5s4.5 1.5 5 4.5"/></svg></span><span class="lbl">导师与课题</span></button>
+      <button data-v="lab" class="navbtn" title="实验台 · 规划实验、记录成果、整体分析" aria-label="实验台"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5h4M6.5 2.5v4L3.4 12a1.4 1.4 0 0 0 1.2 2h6.8a1.4 1.4 0 0 0 1.2-2L9.5 6.5v-4"/><path d="M5 9.5h6"/></svg></span><span class="lbl">实验台</span></button>
       <button data-v="deliv" class="navbtn" title="成果文件 · 历次做出来的东西，点开能看全稿" aria-label="成果文件"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 13 5v6L8 13.5 3 11V5Z"/><path d="M3 5l5 2.5L13 5M8 7.5v6"/></svg></span><span class="lbl">成果文件</span></button>
       <button data-v="fig" class="navbtn" title="图片与图表 · 配过的图与它们的体检" aria-label="图片与图表"><span class="g"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M5 13.5V8M8 13.5V4M11 13.5V9.5"/></svg></span><span class="lbl">图片与图表</span></button>
 
@@ -191,9 +193,29 @@
           <!-- W18-A · 标记与主标题同一行居中，照 DSH HeroShell 的 `.headline` -->
           <div class="herohead">
             <div class="em">荣</div>
-            <h2>你想让荣珂帮你完成什么？</h2>
+            <h2>今天推进哪项研究？</h2>
           </div>
-          <p>直接说需求即可。它会先整理任务单，<b>你确认后才开始执行</b>。</p>
+          <p class="rk-sub"><span class="rk-inline-topic">课题：<b id="rkHubTopic">读取中…</b> <span id="rkHubStats"></span></span><button class="rk-linkbtn" type="button" data-rk-cmd="open-mentor-mgr">切换 / 大纲</button><button class="rk-linkbtn" type="button" data-rk-cmd="toggle-mentor">导师模式</button></p>
+          <div class="rk-hub" id="rkHub">
+            <div class="rk-tiles">
+              <button class="rk-tile" type="button" data-rk-cmd="direct-draft">
+                <span class="rk-tic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 2.5h5.5L12.5 5.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/><path d="M9.5 2.5v3h3M5.5 8.5h5M5.5 11h3.5"/></svg></span>
+                <span class="rk-tinfo"><b>一轮直出初稿</b><small>结构成稿，右侧直接微调</small></span>
+              </button>
+              <button class="rk-tile" type="button" data-rk-cmd="plan-import">
+                <span class="rk-tic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M6 2.5h4M6.5 2.5v3.8L3.4 12a1.3 1.3 0 0 0 1.2 2h6.8a1.3 1.3 0 0 0 1.2-2L9.5 6.3V2.5"/><path d="M5 9.6h6"/></svg></span>
+                <span class="rk-tinfo"><b>实验计划与排期</b><small>方案拆解、进度与板内质控</small></span>
+              </button>
+              <button class="rk-tile" type="button" data-rk-cmd="mentor-guide">
+                <span class="rk-tic" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="5.2" r="2.3"/><path d="M3.2 13.2c.6-2.8 2.2-4.2 4.8-4.2s4.2 1.4 4.8 4.2"/></svg></span>
+                <span class="rk-tinfo"><b>导师指导与课题</b><small>大纲对账、深学与方向把关</small></span>
+              </button>
+              <button class="rk-tile" type="button" data-rk-cmd="mentor-critique">
+                <span class="rk-tic" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 2.5 13 4.6v3.6c0 3.3-2.2 5.1-5 6.3-2.8-1.2-5-3-5-6.3V4.6Z"/><path d="M5.8 8 7.4 9.5l3-3"/></svg></span>
+                <span class="rk-tinfo"><b>报告诊断与挑错</b><small>论断、方法与统计漏洞审查</small></span>
+              </button>
+            </div>
+          </div>
         </div>
         <div id="cPreview"></div>
         <!-- 对话外壳（进度条 / 过程抽屉 / 成果卡）由 resetThread() 现建 ——
@@ -302,6 +324,7 @@
            （世上有什么）是两件事。面板本身不含任何查询逻辑：数据一律来自
            `/api/kb/*`，而那一头转发的就是 agent 自己用的 kb_* 工具。 -->
       <section class="view" id="v-mentor"><div class="page" id="mentorPage"></div></section>
+      <section class="view" id="v-lab"><div class="page" id="labPage"></div></section>
       <section class="view" id="v-kb">
         <div class="page">
           <h2 data-mark="01" data-eyebrow="Library">文献库</h2>
@@ -488,6 +511,8 @@
                   <button class="btn ghost sm" id="modeAnswer" data-mode="answer" type="button"
                           aria-pressed="false" title="只是问我：直接回答，不要产物、不要验收标准；编造照样会被抓">仅问答</button>
                 </span>
+                <button class="btn ghost sm" id="btnUnattended" type="button" aria-pressed="false"
+                        title="一轮直出初稿：执行长任务/写作时不弹窗等待，尽量一次产出完整初稿">直出初稿</button>
                 <!-- 导师模式：会话级、默认关。库内优先，外网补充也须标出处。 -->
                 <span class="mentor" id="mentorWrap" data-on="0"
                       title="导师模式：优先依据文献库，不足时可联网补充并标出处。开关跟随本场会话。">
@@ -534,26 +559,32 @@
                  旧名一个不摘。两条同权时新件在后、由它定形。 -->
           <div class="pillrow" id="tplBody" aria-label="常用科研场景">
             <span class="pillcap">常用场景</span>
-            <button class="chip apill int" data-form="文献检索" data-goal="检索 Ophiocordyceps sinensis 近五年的关键论文，整理成一张对比表：作者、年份、方法、样本量、主要结论，每条都要能追到 DOI">查文献</button>
-            <button class="chip apill int" data-form="通俗读懂" data-goal="用平常人能懂的话讲清楚下面这份材料的重点：它说了什么、结论是什么、值得注意什么：
-（把 PDF 拖进材料区，或把内容粘贴在这里）">通俗读懂</button>
-            <button class="chip apill int" data-form="润色文字" data-goal="把下面这段话润色得更通顺、更干净，保留原意，直接给出改后的版本：
-（把原文粘贴在这里）">润色文字</button>
-            <button class="morepill" id="btnMorePills" type="button" aria-expanded="false" aria-controls="morePills">更多场景 ▾</button>
-            <span id="morePills" hidden>
-            <button class="chip apill int" data-form="查证说法" data-goal="查证下面这个说法是否属实：给出可靠来源、原文出处与出处里的关键句；查不到就直说查不到，不要猜：
-（把说法写在这里）">查证说法</button>
-            <button class="chip apill int" data-form="引用核验" data-goal="核验这份参考文献列表里每一条的 DOI 是否真实有效、是否被撤稿，把有问题的挑出来并给出正确出处：
-（把列表粘贴在这里）">引用核验</button>
+            <button class="chip apill int" data-form="文献检索" data-goal="检索 Ophiocordyceps sinensis 近五年的关键论文，整理成一张对比表：作者、年份、方法、样本量、主要结论，每条都要能追到 DOI">文献检索</button>
             <button class="chip apill int" data-form="深入精读" data-goal="精读下面这篇论文，拆出它的方法、样本量与指标、主要结论和局限，每条结论都标出它在原文里的位置，并给出两个可接着做的研究问题：
 （贴 DOI 或标题）">深入精读</button>
-            <button class="chip apill int" data-form="起草写作" data-goal="按这个目标起草一份约 1200 字的正文，带可核验的引注，交付时附稿面体检报告：
-（题目与要点写在这里）">起草写作</button>
             <button class="chip apill int" data-form="统计审查" data-goal="审查我这份结果的统计报告：实验单元与重复有没有分清、不确定度怎么给的、检验方法与多重比较是否匹配，逐项指出问题与改法：
 （把结果描述贴在这里）">统计审查</button>
             <button class="chip apill int" data-form="配图" data-goal="按投稿要求做一张出版级配图：x=[0.5,1.2,2.4,3.1,4.8]，y=[0.31,0.42,0.55,0.61,0.73]，单分面，导出 PNG，并给出图注与源数据">配图</button>
             <button class="chip apill int" data-form="汇报 PPT" data-goal="把下面这份内容做成组会汇报 PPT：6~20 页、每页配讲稿备注、标题不超过 40 字，产出 .pptx 并附 deck 体检报告：
 （把论文要点或讲稿大纲贴在这里）">汇报 PPT</button>
+            <button class="morepill" id="btnMorePills" type="button" aria-expanded="false" aria-controls="morePills">更多场景 ▾</button>
+            <span id="morePills" hidden>
+            <button class="chip apill int" data-form="一轮直出初稿" data-goal="请根据我的主题与要点，一次性生成结构完整、引注可核验、体例规范的高质量初稿（尽量做到只需微调即可使用）：
+（题目、核心观点、目标字数写在这里）">一轮直出初稿</button>
+            <button class="chip apill int" data-form="接收实验计划" data-goal="请接收以下实验计划，拆解为结构化实验步骤和带日期的后续跟进任务，并存入当前课题的实验台账：
+（把实验计划粘贴在这里）">接收实验计划</button>
+            <button class="chip apill int" data-form="报告诊断" data-goal="请以导师视角审查下面这份报告/草稿，逐条指出论断、方法、数据复算与反例边界上的潜在问题（附位置、证据和改法）：
+（把报告贴在这里或上传文件）">报告诊断</button>
+            <button class="chip apill int" data-form="通俗读懂" data-goal="用平常人能懂的话讲清楚下面这份材料的重点：它说了什么、结论是什么、值得注意什么：
+（把 PDF 拖进材料区，或把内容粘贴在这里）">通俗读懂</button>
+            <button class="chip apill int" data-form="润色文字" data-goal="把下面这段话润色得更通顺、更干净，保留原意，直接给出改后的版本：
+（把原文粘贴在这里）">润色文字</button>
+            <button class="chip apill int" data-form="查证说法" data-goal="查证下面这个说法是否属实：给出可靠来源、原文出处与出处里的关键句；查不到就直说查不到，不要猜：
+（把说法写在这里）">查证说法</button>
+            <button class="chip apill int" data-form="引用核验" data-goal="核验这份参考文献列表里每一条的 DOI 是否真实有效、是否被撤稿，把有问题的挑出来并给出正确出处：
+（把列表粘贴在这里）">引用核验</button>
+            <button class="chip apill int" data-form="起草写作" data-goal="按这个目标起草一份约 1200 字的正文，带可核验的引注，交付时附稿面体检报告：
+（题目与要点写在这里）">起草写作</button>
             </span>
           </div>
           <!-- W18-A · 能力边界从首屏"标题与输入框之间"的黄金位置，搬到这里（DSH 的 `.notice` 位）。
@@ -652,6 +683,7 @@
           <button class="mm" id="deskModeDoc" data-m="doc" title="按期刊版式重排的稿面">版面</button>
           <button class="mm" id="deskModeOrig" data-m="orig" title="论文原件的页面，一个字都不改">原页</button>
         </div>
+        <button class="mini" id="deskEditBtn" title="直接微调正文并保存回工作区">微调</button>
         <button class="mini" id="deskCopy" title="复制全文">复制</button>
         <button class="mini" id="deskDl" title="下载为 Markdown">下载</button>
         <button class="mini" id="deskMore" title="更多：历次稿子 / 查找 / 字号" aria-haspopup="true" aria-expanded="false">⋯</button>
@@ -660,6 +692,7 @@
           <select class="druns" id="deskRun" title="翻回去看历次稿子 —— 只换这一栏的内容，不动左边的对话">
             <option value="">历次稿子…</option></select>
           <button class="dmi" id="deskFindBtn" title="在稿件里查找（Ctrl+F）">查找</button>
+          <button class="dmi" id="deskNormBtn" title="一键确定性修体例（引言去零号、文献表去内部标注等）">一键修体例</button>
           <button class="dmi" id="deskOpenLocal" title="打开电脑上的一篇论文（PDF / Word / PPT），按原件版面读">打开本地论文…</button>
           <div class="dmr"><span>字号</span>
             <button class="mini" id="deskFontDown" title="字号减小">A−</button>
@@ -678,6 +711,19 @@
     <div class="dbody">
       <nav class="dtoc" id="deskToc"></nav>
       <div class="dtext" id="deskText"><div class="dc" id="deskInner"></div></div>
+      <div class="dedit" id="deskEditBox" hidden>
+        <div class="dedit-bar">
+          <span id="deskEditStat">0 字</span>
+          <span class="dedit-acts">
+            <button class="mini" id="deskEditNorm" type="button" title="运行确定性体例规范化">一键修体例</button>
+            <button class="mini" id="deskEditAi" type="button" title="把选段或全文发到对话让 AI 局部微调">AI 局部微调</button>
+            <button class="mini pri" id="deskEditSave" type="button">保存微调</button>
+            <button class="mini" id="deskEditCancel" type="button">返回阅读</button>
+          </span>
+        </div>
+        <textarea id="deskEditor" spellcheck="false" placeholder="在此直接微调正文 Markdown…"></textarea>
+        <div class="dedit-msg" id="deskEditMsg" hidden></div>
+      </div>
       <!-- ══ 原页阅读 ══
            用户的原话是「pdf原页」+「稿件台我也要这样的」。
            为什么不是把 PDF 抽成文本再排一遍：抽取的结果实测是
@@ -718,6 +764,7 @@
 <script src="/static/workspace.js"></script>
 <script src="/static/library.js"></script>
 <script src="/static/mentor.js"></script>
+<script src="/static/lab.js"></script>
 <script src="/static/reader.js"></script>
 <script>
 /* ═════════════ 启动 ═════════════ */

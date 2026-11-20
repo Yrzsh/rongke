@@ -241,6 +241,21 @@ check("★ 小数与科学计数法照收（0.5 不是单位数）",
 # 全空时**整组缺席**（而不是给一个空 list）：载荷小，且下游一律 `anchors[k] || []`。
 check("全空时整组缺席，不是空 list", extract_anchors("1. 甲\n2. 乙"), {})
 
+# ★ 2026-11-07 num-na-glued 修复后的行为钉住（正控 + 两条已知取舍）：
+#   汉字紧贴的数值现在必须收到；标识符守卫不变；ASCII 单位紧贴仍不收。
+check("★ 汉字紧贴的数值照收（47.3% / 1280株）",
+      extract_anchors("处理温度为47.3%、样本1280株").get("num", []), ["47.3", "1280"])
+check("★ 标识符守卫仍在（ophiocordyceps2 / v1.2 / abc123 一个都不收）",
+      extract_anchors("ophiocordyceps2 v1.2 abc123").get("num", []), [])
+check("取舍①：紧贴 ASCII 单位的数仍不收（99.9h —— 单位白名单是另一条判据的事）",
+      extract_anchors("处理时长99.9h。").get("num", []), [])
+check("★ 防截断：99.9h 不许回溯成假锚点 99（放开汉字后实测抓到过）",
+      extract_anchors("时长99.9h、产量12,345abc").get("num", []), [])
+check("防截断不误伤 CSV：12,47.3 两个数都在（,47 不是千分位续段）",
+      extract_anchors("t,y\n12,47.3\n").get("num", []), ["12", "47.3"])
+check("单位数过滤不受修复影响（重复3次 ⇒ 3 仍不作数）",
+      extract_anchors("重复3次、样本1280株").get("num", []), ["1280"])
+
 print("\n── 7b. to_dict：digest 不许动，四件新品必须齐 ──")
 tcA = mk(fn_ok).call("t", {})
 dA = tcA.to_dict()

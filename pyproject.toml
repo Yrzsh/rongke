@@ -69,7 +69,10 @@ Releases = "https://github.com/Yrzsh/rongke/releases"
 
 [tool.setuptools]
 #: 只打 rongke 这个包；仓库根下的 topics/ memory/ runs/ 是**用户数据**，不进包。
-packages = ["rongke", "rongke.web"]
+#: 2026-11-11 补 `aideck`：AI 图元级画布是独立包，不进 packages 的话
+#: wheel 里 `canvas_act` / `canvas_export` 虽在册，运行时 `import aideck`
+#: 直接失败（工具明说后端不可用，但功能等于没发）。与 spec datas 同时改。
+packages = ["rongke", "rongke.web", "aideck"]
 include-package-data = true
 #: setuptools 默认按 `LICEN[CS]E*` 通配扫许可证文件，会把
 #: `license_test.py` / `license_gate_test.py` 也当成 License-File 塞进 wheel。

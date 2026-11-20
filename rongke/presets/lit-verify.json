@@ -58,6 +58,15 @@
       "config": {
         "refresh": "per_stage"
       }
+    },
+    {
+      "op": "insert",
+      "id": "source-alignment",
+      "name": "@rongke/tool-source-alignment",
+      "config": {
+        "expose": true,
+        "min_score": 0.55
+      }
     }
   ]
 }
